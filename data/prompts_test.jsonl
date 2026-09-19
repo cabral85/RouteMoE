@@ -1,0 +1,40 @@
+{"id": "python-test-01", "category": "python", "text": "Escreva uma função Python que remove duplicados de uma lista mantendo a ordem."}
+{"id": "python-test-02", "category": "python", "text": "Como faço para paralelizar tarefas em Python usando multiprocessing?"}
+{"id": "python-test-03", "category": "python", "text": "Implemente um decorator de cache (memoization) simples em Python."}
+{"id": "python-test-04", "category": "python", "text": "Escreva uma função Python que valida se uma string é um palíndromo."}
+{"id": "sql-test-01", "category": "sql", "text": "Escreva uma query SQL para encontrar o segundo maior salário de uma tabela de funcionários."}
+{"id": "sql-test-02", "category": "sql", "text": "Como faço um UPSERT (INSERT ... ON CONFLICT) em PostgreSQL?"}
+{"id": "sql-test-03", "category": "sql", "text": "Escreva uma query SQL que pivota linhas em colunas."}
+{"id": "sql-test-04", "category": "sql", "text": "Explique quando usar EXISTS em vez de IN em uma subquery SQL."}
+{"id": "csharp-test-01", "category": "csharp", "text": "Escreva um exemplo de uso de record em C# 9+ para tipos imutáveis."}
+{"id": "csharp-test-02", "category": "csharp", "text": "Como implemento um middleware customizado em ASP.NET Core?"}
+{"id": "csharp-test-03", "category": "csharp", "text": "Explique como usar Span<T> em C# para melhorar performance."}
+{"id": "csharp-test-04", "category": "csharp", "text": "Escreva um exemplo de padrão Repository em C# com Entity Framework."}
+{"id": "matematica-test-01", "category": "matematica", "text": "Calcule a série de Taylor de e^x em torno de x=0 até o terceiro termo."}
+{"id": "matematica-test-02", "category": "matematica", "text": "Qual a soma dos ângulos internos de um polígono de 12 lados?"}
+{"id": "matematica-test-03", "category": "matematica", "text": "Explique como resolver uma equação diferencial de primeira ordem separável."}
+{"id": "matematica-test-04", "category": "matematica", "text": "Calcule a probabilidade de obter exatamente 3 caras em 5 lançamentos de moeda."}
+{"id": "traducao-test-01", "category": "traducao", "text": "Traduza para o inglês: A colheita deste ano foi a melhor da última década."}
+{"id": "traducao-test-02", "category": "traducao", "text": "Traduza para o português: The committee will review the proposal next Monday."}
+{"id": "traducao-test-03", "category": "traducao", "text": "Traduza para o espanhol: Obrigado por sua paciência durante a manutenção do sistema."}
+{"id": "traducao-test-04", "category": "traducao", "text": "Traduza para o inglês: O projeto foi cancelado devido à falta de financiamento."}
+{"id": "criativo-test-01", "category": "texto_criativo", "text": "Escreva um microconto de exatamente 50 palavras sobre uma promessa quebrada."}
+{"id": "criativo-test-02", "category": "texto_criativo", "text": "Escreva um poema sobre a passagem do tempo em uma pequena cidade."}
+{"id": "criativo-test-03", "category": "texto_criativo", "text": "Crie a cena de abertura de um romance de mistério em um trem noturno."}
+{"id": "criativo-test-04", "category": "texto_criativo", "text": "Escreva uma cena onde dois estranhos se encontram durante uma tempestade."}
+{"id": "factual-test-01", "category": "perguntas_factuais", "text": "Qual é a capital do Canadá?"}
+{"id": "factual-test-02", "category": "perguntas_factuais", "text": "Quem pintou a Mona Lisa?"}
+{"id": "factual-test-03", "category": "perguntas_factuais", "text": "Qual é o oceano mais profundo do mundo?"}
+{"id": "factual-test-04", "category": "perguntas_factuais", "text": "Em que ano o homem pisou na Lua pela primeira vez?"}
+{"id": "raciocinio-test-01", "category": "raciocinio", "text": "Dois trens partem de pontos opostos de uma linha de 240km e se encontram após 2 horas. Se um vai a 70km/h, qual a velocidade do outro?"}
+{"id": "raciocinio-test-02", "category": "raciocinio", "text": "Se todo A é B, e nenhum B é C, o que podemos concluir sobre a relação entre A e C?"}
+{"id": "raciocinio-test-03", "category": "raciocinio", "text": "Uma pessoa mente sempre às segundas, quartas e sextas, e diz a verdade nos outros dias. Ela diz 'Eu menti ontem'. Que dia pode ser hoje?"}
+{"id": "raciocinio-test-04", "category": "raciocinio", "text": "Um relógio quebrado marca sempre a mesma hora e está certo duas vezes por dia. Isso é mais ou menos preciso que um relógio que atrasa 1 minuto por dia? Explique."}
+{"id": "codigo-test-01", "category": "codigo", "text": "Escreva uma função em TypeScript que valida o formato de um CPF brasileiro."}
+{"id": "codigo-test-02", "category": "codigo", "text": "Escreva um Makefile simples para compilar um projeto C com múltiplos arquivos .c."}
+{"id": "codigo-test-03", "category": "codigo", "text": "Implemente um algoritmo de busca em largura (BFS) em um grafo, em qualquer linguagem."}
+{"id": "codigo-test-04", "category": "codigo", "text": "Explique como funciona um Bloom filter e quando usá-lo."}
+{"id": "geral-test-01", "category": "perguntas_gerais", "text": "Como posso organizar melhor minhas finanças pessoais usando planilhas?"}
+{"id": "geral-test-02", "category": "perguntas_gerais", "text": "Quais são as vantagens de aprender um segundo idioma na vida adulta?"}
+{"id": "geral-test-03", "category": "perguntas_gerais", "text": "O que considerar ao adotar um animal de estimação por primeira vez?"}
+{"id": "geral-test-04", "category": "perguntas_gerais", "text": "Como funciona o processo de compostagem doméstica?"}
