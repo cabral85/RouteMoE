@@ -261,8 +261,7 @@ fixed one real bug getting this working: `generate_and_trace` called
 `.cpu()` first, same as the fingerprint tensor two lines below already did.
 Validated end to end on OLMoE with `--device cuda`: router-correctness gate
 held, zero mismatches. Not yet extended to a 3-tier VRAM->RAM->disk
-fallback, and not yet re-measured on a bigger model where GPU compute
-parallelism would have enough work to matter.
+fallback. Re-measured on a bigger model in §8 below.
 
 ## 7. Testing whether `lfu`'s warm-cache advantage can be combined with prediction
 
@@ -302,12 +301,48 @@ never prefetching at all** (pure passive protection via reactive-access
 accumulation) - layering prediction on top, even a well-targeted one,
 reintroduces a version of the same problem that hurt Oracle, just weaker.
 
+## 8. GPU experiment on a bigger model (Qwen1.5-MoE-A2.7B)
+
+Same `scripts/gpu_expert_streaming_experiment.py`, pointed at Qwen1.5-MoE
+(24 layers, 60 experts/layer, top_k=4, plus an always-active shared expert -
+much bigger than OLMoE's 16x64). First time `ChunkedQwen2MoeExperts`
+(the surgical, shared-expert-preserving loader, not the whole-block one
+OLMoE/Qwen3-30B use) has been run with `device="cuda"` at all - worked with
+no changes needed beyond what §6 already built. 1.5GB expert budget, 10
+tokens:
+
+|  | CPU | GPU |
+|---|---|---|
+| avg read+transfer per tensor | 3.977ms | 3.284ms |
+| tokens/second | 0.80 | 0.91 (114%) |
+| peak memory | 1.78GB (RAM) | 5.26GB (VRAM) |
+
+Correctness: identical output tokens on both runs, same as every device
+comparison so far.
+
+Unlike the OLMoE measurement (§4, GPU slightly *worse* than CPU), here GPU
+was slightly *faster* on both metrics. **Real methodological caveat, not
+just a data point**: the script always runs the CPU case first, then GPU,
+in the same process - so the GPU run's disk reads benefit from the OS page
+cache already warmed by the CPU run's own identical reads moments earlier.
+That's a real confound in GPU's favor that this measurement doesn't control
+for. The honest takeaway is narrower than "GPU won here": disk-bound cost
+stays roughly the same order of magnitude on a bigger model too (no new
+surprise), and correctness holds - but a fair CPU-vs-GPU speed comparison
+needs randomized or repeated-and-averaged run order before the *direction*
+of that 114% number can be trusted.
+
 ## What's next
 
-- Extend the GPU experiment to a bigger model / batch size (Qwen1.5-MoE or
-  Qwen3-30B, VRAM allowing), where GPU compute parallelism has enough work
-  to show a real speed difference instead of being dominated by disk I/O
-  either way.
+- Re-measure GPU vs. CPU with run order randomized or repeated/averaged, to
+  control for the OS-page-cache-warming confound found in §8 - the current
+  numbers shouldn't be read as "GPU wins on bigger models" yet.
+- Add `lfu` to the Qwen3-30B sweep and use a longer prompt sequence, to
+  actually test (not just note as untested) whether §2's warm-cache finding
+  holds at this scale.
+- Extend the GPU experiment to a larger batch size, where compute
+  parallelism has enough work to matter regardless of the I/O-bound
+  cold-start cost.
 - More Qwen3-30B prompts before treating §5's `eai_coactivation` vs.
   `lru`/`reactive` ordering as a real finding rather than small-sample noise.
 - Consider adding an `eai_coactivation` variant that ALSO tracks long-run
