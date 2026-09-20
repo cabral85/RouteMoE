@@ -831,6 +831,88 @@ proof, sane outputs), all measured (not estimated), on the exact model class
 the market-relevant papers in
 [Related work](#related-work-is-this-valuable-to-the-market) target.
 
+### Round 7: does EAI actually beat simple caching, under a fixed memory budget?
+
+Every round above measured prediction accuracy or peak memory. None of them
+asked the sharper question a real deployment cares about: under the SAME
+fixed memory budget, does spending cycles on prediction beat just caching
+well? `scripts/benchmark_streaming.py` (a new two-stage trace-then-replay
+harness) answers this directly - `GlobalExpertCache`, one shared byte budget
+across every layer, 8 pluggable eviction policies (`reactive`/`lru`/`lfu`/
+`eai`/`eai_lookahead_N`/`eai_coactivation`/`oracle`), a per-step
+router-correctness gate (0 mismatches across every run below), 4 workload
+orderings, warm/cold cache scenarios. Full data and reasoning in
+[docs/benchmark_findings_current.md](docs/benchmark_findings_current.md);
+short version:
+
+- **Plain `eai` is often net-negative.** At low-to-mid budgets on OLMoE,
+  prefetching the predictor's raw `stored_top_k=16`-candidate window (2x the
+  router's real `top_k=8`) evicted things that would have been reused
+  naturally, for as little as ~9% prefetch precision - worse than `reactive`
+  (no prediction at all) at 2GB (8.2% vs 23.3% hit_rate) and 4GB (32.3% vs
+  39.0%). This is the first result in the whole project where "predict
+  something" measurably lost to "predict nothing."
+- **`eai_coactivation` mostly fixes it.** Instead of the raw candidate list,
+  it greedily builds a `top_k`-sized clique from the persisted (but
+  previously unused, since Round 2) coactivation matrix - experts that fire
+  *together*, not just individually-frequent ones. Beat plain `eai` at every
+  budget tested, competitive with `lru`/`lfu` in cold-cache conditions.
+  Addresses [Round 6](#round-6-a-30b-model-actually-fitting-and-running-fast)'s
+  open item #3 directly.
+- **The whole "does prediction help" question is scoped to under-provisioned
+  budgets.** Oracle's hit_rate lead over plain `reactive` caching shrinks
+  from 30.7pp at 2GB to 4.8pp at 10GB (OLMoE, ~13.8GB total) as the budget
+  approaches the full model - once the budget comfortably fits the model,
+  every policy converges and prediction adds nothing but predictor-lookup
+  overhead.
+- **The single most counter-intuitive finding: in a warm, multi-prompt
+  cache, plain `lfu` can beat a perfect one-step Oracle.** At 8GB warm,
+  `lfu` hit 77.4% vs. Oracle's 76.3% - confirmed with real counters, not
+  just hit_rate: Oracle evicted 2.4x more than `lfu` on an identical prompt
+  sequence, because its prefetching only ever knows the very next step's
+  need and keeps evicting things to make room for it, while `lfu` never
+  evicts proactively and passively protects whatever stayed popular across
+  the whole session. **Practical implication: in a long-running serving
+  session (the realistic case, not a cold reset per request), a well-tuned
+  LFU cache may already capture most of the achievable benefit**, and EAI's
+  marginal value shrinks further than cold-cache numbers alone suggest.
+- **Validated at Qwen3-30B scale too** (48 layers, 128 experts, the same
+  model Round 6 got running): same qualitative shape, smaller absolute
+  numbers (a 10GB budget covers a much smaller fraction of ~57GB of expert
+  weight at this size) - reactive 19.1%/lru 20.8%/oracle 27.9% hit_rate at
+  10GB.
+- **Two real infrastructure bugs found and fixed by actually running this at
+  scale, not by reasoning about it** - the kind of thing this project keeps
+  finding every time it pushes to a bigger model. `ExpertShardIndex` read
+  via mmap, which kept evicted experts' pages resident in the process's own
+  working set regardless of the cache dropping its reference (fixed:
+  plain `seek()`+`readinto()`, no mmap at all - see
+  [docs/benchmark_findings_2026-09-19.md](docs/benchmark_findings_2026-09-19.md)
+  §4). And the trace-collection cache from
+  [Round 5](#round-5-real-streaming-eviction---load-process-unload-per-token)
+  being unbounded *within* one prompt, fine at OLMoE's 16x64 expert grid,
+  pulled 19GB from a single Qwen3-30B prefill alone before generating a
+  token - fixed with bounded eviction plus chunked prefill (numerically
+  verified equivalent to single-shot: float32 max logit diff ~1e-5, pure
+  floating-point non-associativity, same class of noise already documented
+  in this README, not a new bug).
+- **First GPU (CUDA) measurement**: `device="cuda"` now works end to end
+  (`eai/chunked_expert_loader.py`, `eai/expert_cache.py`). On this machine's
+  8.5GB laptop GPU, disk-read cost was identical whether the destination was
+  RAM or VRAM (2.237ms vs 2.225ms per ~4.2MB tensor) - PCIe bandwidth was
+  never the bottleneck, disk always was - and GPU tok/s was actually
+  *slightly worse* than CPU (88%) for this small a model at batch=1, not
+  enough parallel work to amortize CUDA kernel overhead. Not yet wired into
+  `benchmark_streaming.py`'s own sweep.
+- **Does the MoE chunked-loading idea generalize to a dense model, database-
+  partitioning style?** Tested directly (`scripts/dense_layer_streaming_experiment.py`):
+  no. A dense model has no sparsity to exploit - every layer runs on every
+  token unconditionally, so there's nothing to *predict*, only load/evict
+  mechanics with no EAI-style upside. Measured net negative on both memory
+  and speed on GPT-2 and Qwen2.5-1.5B (streaming used *more* memory than a
+  fully-resident baseline, 14-38% of baseline tok/s) - though this predates
+  the mmap fix above and hasn't been re-measured since.
+
 ## Related work: is this valuable to the market?
 
 Checked before investing further, since "prove it's worth continuing" was an
@@ -1026,29 +1108,56 @@ Tracing how the answer changed between the two rounds is itself the finding:
   [kimi-k3-in-c](https://github.com/josesilva05/kimi-k3-in-c) uses
   `O_DIRECT`) - the kind of finding that only shows up by actually running
   at this scale, not by reasoning about it.
+- **Round 7 (fixed-budget benchmark against simple caching) is where the
+  hypothesis stopped being "does prediction correlate with routing" and
+  became "does spending cycles on prediction actually pay for itself."**
+  The honest answer: sometimes, and less than hoped. Plain `eai` lost to
+  `reactive` (zero prediction) at low budgets; `eai_coactivation` (using the
+  coactivation tensor Round 6 flagged as unused) mostly closed that gap; the
+  oracle-vs-reactive advantage itself shrinks toward zero as budget
+  approaches model size, by construction, not a bug; and in a warm,
+  multi-prompt session, plain `lfu` beat a perfect Oracle outright, because
+  Oracle's own prefetching disturbs cross-prompt residency a frequency
+  count naturally protects. This is the project's first result where "add
+  prediction" was measurably the wrong call in part of the space it was
+  tested on - reported as-is, not around. See
+  [Round 7](#round-7-does-eai-actually-beat-simple-caching-under-a-fixed-memory-budget)
+  and [docs/benchmark_findings_current.md](docs/benchmark_findings_current.md)
+  for the full data.
 
-**Recommendation: the two things this PoC most needed to prove - "does
-streaming eviction actually save memory" and "does this work on a model
-large enough for the market pain to be real" - are now both proven, not
-just planned.** What's left is refinement, not a missing foundational piece:
-1. **Explain why `eai_predict` and `lru` nearly tied at 30B scale** (16.1%
-   vs. 16.3%) when `eai_predict` clearly won at smaller scale (29.9% vs.
-   33.2% on OLMoE). The likely cause - 120 training prompts spread across
-   128 experts x 48 layers leaves each cluster/layer cell with less data
-   than OLMoE's 64x16 grid got - is stated in [Round 6](#round-6-a-30b-model-actually-fitting-and-running-fast)
-   but not yet tested; a larger profiling set is the natural next experiment.
-2. **Explain the OLMoE-vs-Qwen1.5-MoE accuracy gap** (density? shared
+**Recommendation: the three things this PoC most needed to prove - "does
+streaming eviction actually save memory," "does this work on a model large
+enough for the market pain to be real," and "does prediction actually beat
+simple caching under a fair, fixed budget" - are now all proven or honestly
+disproven, not just planned.** What's left is refinement and scoping, not a
+missing foundational piece:
+1. ~~Tune the memory/I-O dial using the persisted `coactivation` tensor~~ -
+   **done in Round 7** (`eai_coactivation`); it beats plain `eai` but the
+   real result was narrower than hoped - see Round 7's bullets above for
+   where it does and doesn't help, especially the warm-cache/`lfu` finding.
+2. **Build an `eai_coactivation` + long-run-frequency hybrid.** Round 7's
+   warm-scenario result (plain `lfu` beating a perfect Oracle) suggests the
+   next real gain isn't a smarter *prediction*, it's giving the eviction
+   policy the same kind of cross-prompt memory `lfu` gets almost for free -
+   worth testing before concluding prediction has hit its ceiling.
+3. **Explain why `eai_predict` and `lru` nearly tied at 30B scale** (16.1%
+   vs. 16.3%, Round 6) when `eai_predict` clearly won at smaller scale
+   (29.9% vs. 33.2% on OLMoE). The likely cause - 120 training prompts
+   spread across 128 experts x 48 layers leaves each cluster/layer cell with
+   less data than OLMoE's 64x16 grid got - is stated but not yet tested; a
+   larger profiling set is the natural next experiment.
+4. **Explain the OLMoE-vs-Qwen1.5-MoE accuracy gap** (density? shared
    expert?) before treating any single model's numbers as
    architecture-independent.
-3. **Tune the memory/I-O dial properly** - lookahead window size, and
-   whether a smarter eviction policy (using the persisted-but-still-unused
-   `coactivation` tensor to keep correlated experts resident together) beats
-   the simple "keep exactly the current prediction" rule tested here.
-4. **Push past 30B** - Round 6's chunked-loader approach never needs the
-   full model resident even at load time, so the ~41-44GB wall that stopped
+5. **More Qwen3-30B sweep coverage** - Round 7's target-scale numbers used
+   only 2 prompts and cold-cache only; not enough to trust
+   `eai_coactivation`'s exact ranking there, or to know if the warm-cache
+   `lfu` finding holds at this scale too.
+6. **Push past 30B** - the chunked-loader approach never needs the full
+   model resident even at load time, so the ~41-44GB wall that stopped
    round 1's accelerate/bitsandbytes attempts may not reappear at 70B+
    either; worth finding out directly rather than assuming.
-5. **Only then prototype a real cache**: predict → check hit-rate in a
+7. **Only then prototype a real cache**: predict → check hit-rate in a
    shadow run → promote to actually prefetching in a real serving loop, in
    that order, still without touching the router's real decisions until the
    shadow numbers justify it. Everything before this point has deliberately
