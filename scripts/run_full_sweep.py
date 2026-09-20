@@ -49,9 +49,9 @@ CONFIGS = {
         index="artifacts/qwen3_30b/model_token128.eai",
         budgets_gb=[6, 10],
         workloads=["domain_clustered", "adversarial_shift"],
-        scenarios=["cold"],
+        scenarios=["cold", "warm"],
         policies="reactive,lru,eai_coactivation,oracle",
-        num_prompts=2,
+        num_prompts=4,
         max_new_tokens=6,
         min_free_ram_gb=12.0,
         # Raised from 8.0 after a real abort: stage 1's trace cache is
