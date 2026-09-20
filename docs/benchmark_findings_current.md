@@ -160,30 +160,49 @@ parallelism has more work to actually pay for itself.
 
 ## 5. Qwen3-30B sweep - the real target-scale numbers
 
-`artifacts/benchmark/sweep_qwen3_30b.jsonl` - 32 events, 2 budgets (6/10GB)
-x 2 workloads (domain_clustered/adversarial_shift), cold only, 4 policies
-(reactive/lru/eai_coactivation/oracle), 2 prompts. All invariants held
-(0 failures): router correctness, budget enforcement, oracle >= reactive/lru
-hit_rate at both budgets, bare-oracle zero waste.
+`artifacts/benchmark/sweep_qwen3_30b.jsonl` - **expanded to 128 events**, 2
+budgets (6/10GB) x 2 workloads (domain_clustered/adversarial_shift) x 2
+scenarios (cold/warm) x 4 policies (reactive/lru/eai_coactivation/oracle) x
+4 prompts (up from the first pass's 2, cold-only). All invariants held
+(0 failures across all 8 combos): router correctness, budget enforcement,
+oracle >= reactive/lru hit_rate in every group (cold AND warm this time -
+see below), bare-oracle zero waste.
 
-| budget | reactive | lru | eai_coactivation | oracle |
-|---|---|---|---|---|
-| 6GB | 11.9% / 0.62 tok/s | 14.2% / 0.69 | 13.0% / 0.63 | 23.9% / 1.64 |
-| 10GB | 19.1% / 0.86 tok/s | 20.8% / 0.95 | 20.5% / 0.89 | 27.9% / 2.42 |
+| scenario | budget | reactive | lru | eai_coactivation | oracle |
+|---|---|---|---|---|---|
+| cold | 6GB | 12.0% / 0.57 | 13.5% / 0.55 | 13.4% / 0.64 | 25.3% / 1.79 |
+| warm | 6GB | 12.8% / 0.65 | 14.1% / 0.67 | 13.9% / 0.66 | 25.9% / 2.01 |
+| cold | 10GB | 19.3% / 0.86 | 20.7% / 0.93 | 20.6% / 0.91 | 28.3% / 2.51 |
+| warm | 10GB | 22.0% / 0.86 | 22.9% / 0.91 | 22.9% / 0.90 | 30.4% / 2.47 |
 
-(cells are hit_rate / tokens-per-second)
+(cells are hit_rate / tokens-per-second, 4-prompt average)
 
-Same qualitative shape as OLMoE - oracle clearly ahead of every real policy,
-gap narrowing somewhat from 6GB to 10GB - but at a much smaller absolute
-scale (Qwen3-30B has 48 layers x 128 experts vs. OLMoE's 16x64, so the same
-byte budget covers a much smaller fraction of the full model: even 10GB is
-small relative to the ~57GB full expert weight size). `eai_coactivation`
-sits between `reactive` and `lru` here rather than clearly ahead of both, on
-this small (2-prompt) sample - not enough data yet to call this a real
-divergence from the OLMoE pattern vs. sampling noise; would need more
-prompts to say confidently. tok/s at this scale is far slower than OLMoE
-(sub-1 to ~2.4 tok/s vs. OLMoE's several tok/s) - expected: ~3x the layers,
-~2x the experts/layer/token to fetch on every miss, same disk speed.
+Same qualitative shape as OLMoE - oracle clearly ahead of every real policy
+- but two real differences from OLMoE worth being explicit about, not
+glossing over:
+
+- **The dramatic warm-cache jump OLMoE showed does NOT reproduce here.**
+  OLMoE's `lfu` went from 57.3% (cold) to 77.4% (warm) at 8GB - a +20pp
+  swing. Here, warm only adds +0.8 to +2.7pp over cold for every policy
+  tested. Most likely explanation: only 4 prompts per warm run isn't enough
+  "session length" for cross-prompt popularity to accumulate meaningfully
+  against a 128-experts/layer x 48-layer space (6144 total slots vs.
+  OLMoE's 1024) - the session would need to run much longer before a
+  frequency count built up enough signal to matter at this scale. Not yet
+  tested with more prompts.
+- **`lfu` itself isn't in this sweep's policy list** (only
+  reactive/lru/eai_coactivation/oracle) - so whether OLMoE's headline
+  finding (plain `lfu` beating a perfect Oracle in a warm cache) holds,
+  fails, or needs a much longer session at Qwen3-30B scale is genuinely
+  untested, not just "not yet seen." Worth adding `lfu` and a longer prompt
+  sequence before drawing any conclusion either way.
+- `eai_coactivation` is competitive with `lru` at this scale (13.4-22.9%
+  vs. lru's 13.5-22.9%) rather than clearly ahead like on OLMoE - still not
+  enough data across enough prompts to call this a real architecture-
+  dependent divergence vs. sampling noise.
+- tok/s at this scale is far slower than OLMoE (sub-1 to ~2.5 tok/s vs.
+  OLMoE's several tok/s) - expected: ~3x the layers, ~2x the experts/layer
+  to fetch on every miss, same disk speed underneath.
 
 ### Getting this sweep to run at all required two real engineering fixes
 
