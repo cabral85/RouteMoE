@@ -10,6 +10,7 @@ dependencies = [
     "safetensors>=0.4",
     "scikit-learn>=1.4",
     "numpy>=1.26",
+    "psutil>=5.9",
 ]
 
 [tool.setuptools.packages.find]
