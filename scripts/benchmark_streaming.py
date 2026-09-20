@@ -181,7 +181,7 @@ def generate_and_trace(
 
     for _ in range(max_new_tokens):
         generated_ids.append(next_id)
-        selected_per_step.append(np.stack([b.last_selected[-1].numpy() for b in blocks]))
+        selected_per_step.append(np.stack([b.last_selected[-1].cpu().numpy() for b in blocks]))
         fingerprints.append(fp)
 
         if next_id == tokenizer.eos_token_id:
@@ -223,7 +223,10 @@ def main():
     parser.add_argument("--out", default="artifacts/benchmark/events.jsonl")
     parser.add_argument("--min-free-ram-gb", type=float, default=4.0, help="abort rather than proceed if free system RAM drops below this, checked before model load and before every prompt/policy iteration")
     parser.add_argument("--cache-scenario", default="cold", choices=["cold", "warm"], help="cold: cache evicted before every prompt (default). warm: one cache per policy, residency carries over across prompts in the run (simulates an already-serving cache) - only finalized (pending prefetches resolved) after the LAST prompt.")
+    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="where the backbone and streamed experts live - cuda makes --cache-gb a VRAM budget instead of a RAM one (see eai/expert_cache.py's device parameter). Backbone load and stage-1 trace generation still use host RAM as a staging area regardless (disk -> host -> device), so --min-free-ram-gb still applies.")
     args = parser.parse_args()
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("--device cuda requested but no CUDA device is available in this environment")
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except AttributeError:
@@ -260,8 +263,8 @@ def main():
     print(f"Policies: {policies}")
     print(f"Prompts: {len(prompts)}  max_new_tokens={args.max_new_tokens}")
 
-    print("\nLoading chunked model (for stage 1: deterministic trace generation)...")
-    model, blocks, shard_index, load_stats = load_chunked_model(args.model, model_dir, dtype=dtype)
+    print(f"\nLoading chunked model on device={args.device} (for stage 1: deterministic trace generation)...")
+    model, blocks, shard_index, load_stats = load_chunked_model(args.model, model_dir, dtype=dtype, device=args.device)
     top_k = blocks[0].top_k
 
     print("\n=== Stage 1: deterministic generation + ground-truth trace ===")
@@ -298,7 +301,7 @@ def main():
                 bench_stats = BenchmarkStats()
                 cache = GlobalExpertCache(
                     shard_index=shard_index, budget_bytes=budget_bytes, policy=cache_policy,
-                    dtype=dtype, stats=bench_stats, tensor_name_fn=tensor_name_fn,
+                    dtype=dtype, stats=bench_stats, tensor_name_fn=tensor_name_fn, device=args.device,
                 )
                 for b in blocks:
                     b.attach_global_cache(cache)
@@ -322,6 +325,7 @@ def main():
                 "cache_budget_bytes": budget_bytes,
                 "workload": args.workload,
                 "cache_scenario": args.cache_scenario,
+                "device": args.device,
                 **result,
                 **bench_stats.as_dict(),
             }
