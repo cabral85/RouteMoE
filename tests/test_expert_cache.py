@@ -36,7 +36,7 @@ def tensor_name_fn(layer_idx: int, expert_idx: int, proj: str) -> str:
     return f"L{layer_idx}.E{expert_idx}.{proj}"
 
 
-def make_cache(policy: str, budget_experts: int) -> GlobalExpertCache:
+def make_cache(policy: str, budget_experts: int, **kwargs) -> GlobalExpertCache:
     stats = BenchmarkStats()
     return GlobalExpertCache(
         shard_index=FakeShardIndex(),
@@ -45,6 +45,7 @@ def make_cache(policy: str, budget_experts: int) -> GlobalExpertCache:
         dtype=torch.bfloat16,
         stats=stats,
         tensor_name_fn=tensor_name_fn,
+        **kwargs,
     )
 
 
@@ -164,6 +165,71 @@ def test_reload_counted_distinct_from_cold_miss():
     print("test_reload_counted_distinct_from_cold_miss: OK")
 
 
+def test_hybrid_prefers_high_predicted_probability_when_alpha_dominates():
+    """With alpha >> every other weight, hybrid should evict the entry with
+    the LOWEST predicted_probability first, regardless of frequency/recency."""
+    cache = make_cache("hybrid", budget_experts=2, hybrid_alpha=100.0, hybrid_beta=0.0, hybrid_gamma=0.0, hybrid_delta=0.0, hybrid_lambda=0.0)
+    cache.get(0, 0)
+    cache.get(0, 1)
+    # expert 0 accessed many more times than expert 1 (frequency/recency would favor keeping 0)...
+    cache.get(0, 0)
+    cache.get(0, 0)
+    cache.get(0, 0)
+    # ...but expert 1 is predicted far more likely to be needed again - alpha dominates, so 1 survives, 0 is evicted
+    cache.prefetch(0, [0, 1], predicted_probabilities={0: 0.01, 1: 0.99})
+    cache.get(0, 2)  # 3rd distinct key over budget=2, forces one eviction
+    assert (0, 1) in cache.resident_keys, "high predicted_probability must protect an entry when alpha dominates the score"
+    assert (0, 0) not in cache.resident_keys
+    print("test_hybrid_prefers_high_predicted_probability_when_alpha_dominates: OK")
+
+
+def test_hybrid_penalizes_load_cost_when_lambda_dominates():
+    """With lambda >> every other weight, hybrid should evict the BIGGER
+    (costlier-to-reload) entry first, regardless of everything else."""
+    cache = make_cache("hybrid", budget_experts=3, hybrid_alpha=0.0, hybrid_beta=0.0, hybrid_gamma=0.0, hybrid_delta=0.0, hybrid_lambda=100.0)
+
+    class VariableSizeShardIndex:
+        def get_tensor(self, name: str) -> torch.Tensor:
+            # expert 1's tensors are deliberately much bigger than 0's or 2's
+            size = 8 if ".E1." in name else 4
+            return torch.zeros(size, size, dtype=torch.bfloat16)
+
+    cache._shard_index = VariableSizeShardIndex()
+    cache.get(0, 0)
+    cache.get(0, 1)  # bigger - higher load cost
+    cache.get(0, 2)
+    # all three fit (budget_experts=3 sized off the SMALL EXPERT_BYTES constant,
+    # so the bigger entry may already have forced pressure - budget is generous
+    # enough here that eviction only happens on the 4th key)
+    cache.get(0, 3)
+    assert (0, 1) not in cache.resident_keys, "the biggest (costliest-to-reload) entry must be evicted first when lambda dominates"
+    print("test_hybrid_penalizes_load_cost_when_lambda_dominates: OK")
+
+
+def test_admission_control_rejects_low_benefit_prefetch():
+    """Once there's read-time history and the cache is under real pressure,
+    a very-low-probability prefetch should be rejected outright rather than
+    silently admitted (the whole point of Fase 4's should_prefetch gate)."""
+    cache = make_cache("lru", budget_experts=1, admission_control=True, admission_margin=1.0)
+    cache.get(0, 0)  # establishes real read-time history (reads_count > 0), and fills the 1-expert budget
+    cache.prefetch(0, [1], predicted_probabilities={1: 0.0})  # ~zero predicted benefit, but WOULD cost an eviction to admit
+    assert cache.stats.admission_checks == 1
+    assert cache.stats.admission_rejected == 1
+    assert (0, 1) not in cache.resident_keys, "a near-zero-benefit prefetch under real cache pressure should be rejected, not admitted"
+    print("test_admission_control_rejects_low_benefit_prefetch: OK")
+
+
+def test_admission_control_off_by_default_matches_prior_behavior():
+    """admission_control defaults to False - every prefetch is unconditionally
+    admitted exactly like before this feature existed, zero regression risk."""
+    cache = make_cache("lru", budget_experts=1)
+    cache.get(0, 0)
+    cache.prefetch(0, [1], predicted_probabilities={1: 0.0})  # would be rejected if admission_control were on
+    assert cache.stats.admission_checks == 0
+    assert (0, 1) in cache.resident_keys, "with admission_control=False (default), prefetch must remain unconditional"
+    print("test_admission_control_off_by_default_matches_prior_behavior: OK")
+
+
 if __name__ == "__main__":
     test_budget_enforced()
     test_fifo_evicts_oldest_loaded()
@@ -175,4 +241,8 @@ if __name__ == "__main__":
     test_lfu_prefetch_not_immediately_self_evicted()
     test_global_budget_spans_layers()
     test_reload_counted_distinct_from_cold_miss()
+    test_hybrid_prefers_high_predicted_probability_when_alpha_dominates()
+    test_hybrid_penalizes_load_cost_when_lambda_dominates()
+    test_admission_control_rejects_low_benefit_prefetch()
+    test_admission_control_off_by_default_matches_prior_behavior()
     print("\nOK - all expert_cache unit tests passed")

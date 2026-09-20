@@ -60,8 +60,19 @@ POLICY_CHOICES = [
     "reactive", "lru", "lfu",
     "eai", "eai_lookahead_1", "eai_lookahead_2", "eai_lookahead_4", "eai_lookahead_8",
     "eai_coactivation", "eai_coactivation_lfu",
-    "oracle",
+    "hybrid", "hybrid_adaptive",
+    "oracle", "oracle_1", "oracle_2", "oracle_4", "oracle_8",
 ]
+# oracle_N: N = how many future steps' real (ground-truth) expert selections
+# the policy is allowed to see and prefetch, answering "LFU beat Oracle
+# because prediction is useless, or because Oracle-1's horizon is too
+# short?" (docs/benchmark_findings_current.md). Plain "oracle" is kept as an
+# alias for oracle_1 - preserves every prior sweep's policy name/meaning
+# unchanged (see docs/benchmark_findings_2026-09-19.md,
+# docs/benchmark_findings_current.md's existing "oracle" rows). Oracle
+# remains benchmark-only regardless of N: it only ever changes cache/
+# prefetch decisions, never what the router computes or what tokens get
+# generated - same guarantee as every other policy here.
 # eai_coactivation_lfu: same coactivation-based prefetch as eai_coactivation,
 # but LFU eviction instead of LRU underneath - motivated by a real finding
 # (docs/benchmark_findings_current.md §2): in a warm, multi-prompt cache,
@@ -231,6 +242,13 @@ def main():
     parser.add_argument("--min-free-ram-gb", type=float, default=4.0, help="abort rather than proceed if free system RAM drops below this, checked before model load and before every prompt/policy iteration")
     parser.add_argument("--cache-scenario", default="cold", choices=["cold", "warm"], help="cold: cache evicted before every prompt (default). warm: one cache per policy, residency carries over across prompts in the run (simulates an already-serving cache) - only finalized (pending prefetches resolved) after the LAST prompt.")
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="where the backbone and streamed experts live - cuda makes --cache-gb a VRAM budget instead of a RAM one (see eai/expert_cache.py's device parameter). Backbone load and stage-1 trace generation still use host RAM as a staging area regardless (disk -> host -> device), so --min-free-ram-gb still applies.")
+    parser.add_argument("--alpha", type=float, default=1.0, help="hybrid policy: weight on predicted_probability")
+    parser.add_argument("--beta", type=float, default=1.0, help="hybrid policy: weight on coactivation_score")
+    parser.add_argument("--gamma", type=float, default=1.0, help="hybrid policy: weight on normalized access frequency")
+    parser.add_argument("--delta", type=float, default=1.0, help="hybrid policy: weight on normalized recency")
+    parser.add_argument("--lambda", dest="lambda_", type=float, default=1.0, help="hybrid policy: weight SUBTRACTED for normalized load cost (bigger experts score lower, all else equal)")
+    parser.add_argument("--admission-control", action="store_true", help="gate every prefetch through GlobalExpertCache.should_prefetch() (benefit vs. cost) instead of admitting unconditionally - see eai/expert_cache.py")
+    parser.add_argument("--admission-margin", type=float, default=1.0, help="multiplies admission control's cost side - >1.0 stricter (fewer prefetches), <1.0 looser")
     args = parser.parse_args()
     if args.device == "cuda" and not torch.cuda.is_available():
         raise SystemExit("--device cuda requested but no CUDA device is available in this environment")
@@ -295,7 +313,9 @@ def main():
     for policy in policies:
         if policy == "eai_coactivation_lfu":
             cache_policy = "lfu"
-        elif policy.startswith("eai") or policy == "oracle":
+        elif policy in ("hybrid", "hybrid_adaptive"):
+            cache_policy = "hybrid"
+        elif policy.startswith("eai") or policy == "oracle" or policy.startswith("oracle_"):
             cache_policy = "lru"
         else:
             cache_policy = policy
@@ -314,6 +334,9 @@ def main():
                 cache = GlobalExpertCache(
                     shard_index=shard_index, budget_bytes=budget_bytes, policy=cache_policy,
                     dtype=dtype, stats=bench_stats, tensor_name_fn=tensor_name_fn, device=args.device,
+                    hybrid_alpha=args.alpha, hybrid_beta=args.beta, hybrid_gamma=args.gamma,
+                    hybrid_delta=args.delta, hybrid_lambda=args.lambda_,
+                    admission_control=args.admission_control, admission_margin=args.admission_margin,
                 )
                 for b in blocks:
                     b.attach_global_cache(cache)
@@ -326,6 +349,7 @@ def main():
 
             result = replay_policy(
                 model, blocks, tokenizer, trace, policy, predictor, index, cache, bench_stats,
+                cache_scenario=args.cache_scenario,
             )
             if args.cache_scenario == "cold" or is_last_prompt:
                 cache.finalize()
@@ -338,6 +362,9 @@ def main():
                 "workload": args.workload,
                 "cache_scenario": args.cache_scenario,
                 "device": args.device,
+                "alpha": args.alpha, "beta": args.beta, "gamma": args.gamma,
+                "delta": args.delta, "lambda": args.lambda_,
+                "admission_control": args.admission_control, "admission_margin": args.admission_margin,
                 **result,
                 **bench_stats.as_dict(),
             }
@@ -355,7 +382,8 @@ def main():
 
 
 def replay_policy(model, blocks, tokenizer, trace: GenerationTrace, policy: str,
-                   predictor: Predictor, index, cache: GlobalExpertCache, bench_stats: BenchmarkStats) -> dict:
+                   predictor: Predictor, index, cache: GlobalExpertCache, bench_stats: BenchmarkStats,
+                   cache_scenario: str = "cold") -> dict:
     """Feeds `trace`'s exact token sequence through `model` one token at a
     time (real KV cache), with `cache` (already configured for this policy's
     eviction rule and budget) governing expert residency. `policy` decides
@@ -386,6 +414,9 @@ def replay_policy(model, blocks, tokenizer, trace: GenerationTrace, policy: str,
     lookahead = 0
     if policy.startswith("eai_lookahead_"):
         lookahead = int(policy.rsplit("_", 1)[1])
+    elif policy.startswith("oracle_"):
+        lookahead = int(policy.rsplit("_", 1)[1]) - 1  # oracle_1 == plain "oracle" == lookahead 0 (current step only)
+    # plain "oracle" (no suffix): lookahead stays 0, same as oracle_1
 
     def predict_for_step(ground_truth_idx: int):
         """Full PredictionResult (cluster_id + (num_layers, stored_top_k)
@@ -421,7 +452,7 @@ def replay_policy(model, blocks, tokenizer, trace: GenerationTrace, policy: str,
     for step in range(num_replay_steps):
         gt_idx = step + 1  # ground truth for the forward pass about to run
 
-        if policy == "oracle":
+        if policy == "oracle" or policy.startswith("oracle_"):
             for layer_idx, block in enumerate(blocks):
                 window_experts = set(trace.selected_experts[gt_idx, layer_idx].tolist())
                 for la in range(1, lookahead + 1):
@@ -429,6 +460,31 @@ def replay_policy(model, blocks, tokenizer, trace: GenerationTrace, policy: str,
                     if future_idx < num_steps:
                         window_experts.update(trace.selected_experts[future_idx, layer_idx].tolist())
                 cache.prefetch(layer_idx, sorted(window_experts))
+        elif policy in ("hybrid", "hybrid_adaptive"):
+            pred_result = predict_for_step(gt_idx)
+            predicted = pred_result.top_experts_per_layer
+            for layer_idx in range(len(blocks)):
+                top1_pred = int(predicted[layer_idx, 0]) if predicted.shape[1] > 0 else -1
+                real_set = set(trace.selected_experts[gt_idx, layer_idx].tolist())
+                bench_stats.predictor_top1_total += 1
+                if top1_pred in real_set:
+                    bench_stats.predictor_top1_hits += 1
+
+            if policy == "hybrid_adaptive":
+                avg_expert_bytes = cache.stats.storage_bytes_read / max(1, cache.stats.unique_experts_loaded)
+                model_working_set_bytes = top_k * len(blocks) * avg_expert_bytes
+                weights = hybrid_adaptive_weights(cache.budget_bytes, model_working_set_bytes, cache_scenario)
+                cache.hybrid_alpha, cache.hybrid_beta = weights["alpha"], weights["beta"]
+                cache.hybrid_gamma, cache.hybrid_delta = weights["gamma"], weights["delta"]
+                cache.hybrid_lambda = weights["lam"]
+                if step == 0:
+                    print(f"    [hybrid_adaptive] regime={weights['_regime']} alpha={weights['alpha']:.2f} beta={weights['beta']:.2f} gamma={weights['gamma']:.2f} delta={weights['delta']:.2f} lambda={weights['lam']:.2f}")
+
+            for layer_idx, block in enumerate(blocks):
+                window, predicted_probabilities, coactivation_scores = hybrid_select_with_scores(
+                    index, pred_result.cluster_id, layer_idx, pred_result.probabilities_per_layer[layer_idx], target_width=top_k,
+                )
+                cache.prefetch(layer_idx, window, predicted_probabilities=predicted_probabilities, coactivation_scores=coactivation_scores)
         elif policy.startswith("eai"):
             pred_result = predict_for_step(gt_idx)
             predicted = pred_result.top_experts_per_layer  # (num_layers, stored_top_k)
@@ -534,6 +590,88 @@ def coactivation_select(index, cluster_id: int, layer_idx: int, target_width: in
         remaining.remove(best)
 
     return [int(slots[s]) for s in selected]
+
+
+def hybrid_select_with_scores(
+    index, cluster_id: int, layer_idx: int, probabilities_row: np.ndarray, target_width: int,
+) -> tuple[list[int], dict[int, float], dict[int, float]]:
+    """Same greedy-clique candidate selection as `coactivation_select`, but
+    also returns the per-expert scores GlobalExpertCache's "hybrid" eviction
+    rule needs: `predicted_probability` (straight from the predictor's own
+    stored per-slot probability) and `coactivation_score` (mean pairwise
+    coactivation with the rest of the selected clique - the same quantity
+    the greedy selection itself optimizes for, exposed here instead of
+    thrown away). Returns (window, predicted_probabilities, coactivation_scores).
+    """
+    coact = index.coactivation[cluster_id, layer_idx]
+    slots = index.top_experts[cluster_id, layer_idx]
+    valid = [s for s in range(len(slots)) if slots[s] >= 0]
+    if not valid:
+        return [], {}, {}
+
+    target_width = min(target_width, len(valid))
+    selected = [valid[0]]
+    remaining = [s for s in valid if s != valid[0]]
+    while len(selected) < target_width and remaining:
+        best = max(remaining, key=lambda s: float(np.mean([coact[s, t] for t in selected])))
+        selected.append(best)
+        remaining.remove(best)
+
+    window = [int(slots[s]) for s in selected]
+    predicted_probabilities = {int(slots[s]): float(probabilities_row[s]) for s in selected}
+    coactivation_scores = {
+        int(slots[s]): float(np.mean([coact[s, t] for t in selected if t != s])) if len(selected) > 1 else 0.0
+        for s in selected
+    }
+    return window, predicted_probabilities, coactivation_scores
+
+
+def hybrid_adaptive_weights(cache_budget_bytes: int, model_working_set_bytes: float, cache_scenario: str) -> dict[str, float]:
+    """Fase 5: heuristic (not learned) weight selection based on the current
+    regime - explicit rules, not ML, per spec. `model_working_set_bytes` is
+    an estimate of what ONE step's real need costs (top_k * num_layers *
+    avg_expert_bytes) - the natural yardstick for "is this budget tiny,
+    medium, or large" (a fixed GB number means something different on
+    OLMoE vs. Qwen3-30B). Returns the regime name (for logging - "Registrar
+    no log qual regime foi usado") alongside the weights, via the dict's
+    own "_regime" key.
+    """
+    if model_working_set_bytes <= 0:
+        ratio = 1.0  # no estimate yet (very first step) - treat as "medium" until real data exists
+    else:
+        ratio = cache_budget_bytes / model_working_set_bytes
+
+    if ratio < 1.5:
+        # tiny cache: barely fits one step's own working set - prioritize the
+        # immediate future hard, don't waste budget on frequency bookkeeping
+        # that a cache this size can't afford to honor anyway.
+        weights = dict(alpha=3.0, beta=2.0, gamma=0.2, delta=0.2, lam=0.5, _regime="tiny_cache")
+    elif ratio < 4.0:
+        # medium cache: balance prediction against accumulated usage stats.
+        weights = dict(alpha=1.0, beta=1.0, gamma=1.0, delta=1.0, lam=1.0, _regime="medium_cache")
+    else:
+        # large cache: most of what's needed already fits - aggressive
+        # prefetch mostly just adds eviction churn (see docs/benchmark_findings_current.md
+        # #2/#7's warm-cache findings) - let accumulated frequency dominate,
+        # keep prediction as a light tiebreaker only.
+        weights = dict(alpha=0.3, beta=0.3, gamma=2.0, delta=1.0, lam=1.0, _regime="large_cache")
+
+    if cache_scenario == "warm":
+        # a warm cache has real cross-prompt history to lean on - the whole
+        # lesson of docs/benchmark_findings_current.md #2's lfu-beats-oracle
+        # finding: weight frequency up further when there's session-long
+        # signal to actually exploit.
+        weights["gamma"] *= 1.5
+        weights["_regime"] += "+warm"
+    else:
+        # cold: no cross-prompt history yet to lean on - lean on
+        # prediction/coactivation instead, frequency/recency are still
+        # forming.
+        weights["alpha"] *= 1.3
+        weights["beta"] *= 1.3
+        weights["_regime"] += "+cold"
+
+    return weights
 
 
 if __name__ == "__main__":

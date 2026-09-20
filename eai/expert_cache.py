@@ -37,7 +37,7 @@ from typing import Literal
 
 import torch
 
-EvictionPolicyName = Literal["fifo", "lru", "lfu"]
+EvictionPolicyName = Literal["fifo", "lru", "lfu", "hybrid"]
 ExpertKey = tuple[int, int]  # (layer_idx, expert_idx)
 
 
@@ -49,6 +49,14 @@ class ExpertEntry:
     access_count: int = 0
     load_order: int = 0  # monotonic counter at load time, for FIFO
     is_pending_prefetch: bool = False  # loaded via prefetch(), not yet confirmed used by a real get()
+    # Set externally (by the caller's predictor/coactivation logic, via
+    # GlobalExpertCache.update_scores()) - the cache itself never computes
+    # these, it only reads them for the "hybrid" eviction rule. Decay toward
+    # 0 is the caller's responsibility (a stale high score from many steps
+    # ago shouldn't protect an entry forever); this class just stores
+    # whatever it was last told.
+    predicted_probability: float = 0.0
+    coactivation_score: float = 0.0
 
 
 @dataclass
@@ -72,6 +80,13 @@ class BenchmarkStats:
     bytes_prefetched_used: int = 0
     bytes_prefetched_unused: int = 0
 
+    # admission control (see GlobalExpertCache.prefetch's admission gate) -
+    # 0/0 for every policy that doesn't use it (admission_control=False),
+    # not just missing - so a report can tell "not applicable" from "always
+    # admitted" at a glance.
+    admission_checks: int = 0
+    admission_rejected: int = 0
+
     # I/O (measured, not estimated: real get_tensor calls, real wall-clock time)
     storage_bytes_read: int = 0
     reads_count: int = 0
@@ -86,9 +101,15 @@ class BenchmarkStats:
     # memory (peak tracked by the cache; RSS by the caller)
     peak_resident_bytes: int = 0
 
+    # distinct (layer, expert) keys ever loaded (reactive or prefetch) -
+    # feeds reload_amplification below. Not the same as prefetched_experts
+    # or cache_misses: this counts UNIQUE keys, those count events.
+    unique_experts_loaded: int = 0
+
     def as_dict(self) -> dict:
         hit_denom = max(1, self.cache_hits + self.cache_misses)
         prefetch_denom = max(1, self.bytes_prefetched)
+        total_loads = self.cache_misses + self.prefetched_experts  # every _load_entry() call, reactive or speculative
         return {
             "expert_accesses": self.expert_accesses,
             "cache_hits": self.cache_hits,
@@ -96,6 +117,7 @@ class BenchmarkStats:
             "hit_rate": self.cache_hits / hit_denom,
             "evictions": self.evictions,
             "expert_reloads": self.expert_reloads,
+            "eviction_churn": self.evictions / max(1, self.expert_accesses),
             "prefetched_experts": self.prefetched_experts,
             "useful_prefetches": self.useful_prefetches,
             "wasted_prefetches": self.wasted_prefetches,
@@ -104,6 +126,12 @@ class BenchmarkStats:
             "bytes_prefetched_used": self.bytes_prefetched_used,
             "bytes_prefetched_unused": self.bytes_prefetched_unused,
             "useful_prefetch_ratio": self.bytes_prefetched_used / prefetch_denom,
+            "unique_experts_loaded": self.unique_experts_loaded,
+            "reload_amplification": total_loads / max(1, self.unique_experts_loaded),
+            "useful_io_ratio": (self.storage_bytes_read - self.bytes_prefetched_unused) / max(1, self.storage_bytes_read),
+            "admission_checks": self.admission_checks,
+            "admission_rejected": self.admission_rejected,
+            "admission_rejection_rate": self.admission_rejected / max(1, self.admission_checks),
             "storage_bytes_read": self.storage_bytes_read,
             "reads_count": self.reads_count,
             "avg_read_size_bytes": self.storage_bytes_read / max(1, self.reads_count),
@@ -151,6 +179,27 @@ class GlobalExpertCache:
         # read() produces) followed by one .to(device) transfer over PCIe.
         # See scripts/gpu_expert_streaming_experiment.py for real measured
         # numbers on this machine's GPU.
+        hybrid_alpha: float = 1.0,   # weight on predicted_probability
+        hybrid_beta: float = 1.0,    # weight on coactivation_score
+        hybrid_gamma: float = 1.0,   # weight on normalized access frequency
+        hybrid_delta: float = 1.0,   # weight on normalized recency
+        hybrid_lambda: float = 1.0,  # weight SUBTRACTED for normalized load cost (bigger/costlier experts score lower, all else equal)
+        # Only read when policy="hybrid" - score(expert) = alpha*predicted_probability
+        # + beta*coactivation_score + gamma*norm_frequency + delta*norm_recency
+        # - lambda*norm_load_cost. Lowest score among resident entries is
+        # evicted first. Deliberately NOT auto-tuned here - see
+        # scripts/benchmark_streaming.py's --alpha/--beta/--gamma/--delta/--lambda
+        # flags and docs/benchmark_findings_current.md for the sweep that
+        # picks real values instead of guessing.
+        admission_control: bool = False,
+        # When True, a prefetch is only admitted if it clears a benefit-vs-
+        # cost gate (see should_prefetch()) instead of being admitted
+        # unconditionally whenever prefetch() is called - see that method's
+        # docstring for the (deliberately simple, not "mathematically
+        # perfect") formula.
+        admission_margin: float = 1.0,
+        # Multiplies the cost side of the admission gate - >1.0 makes
+        # admission stricter (fewer, more confident prefetches), <1.0 looser.
     ):
         self.budget_bytes = budget_bytes
         self.policy: EvictionPolicyName = policy
@@ -160,6 +209,13 @@ class GlobalExpertCache:
         self._shard_index = shard_index
         self._recycle_every_n_loads = recycle_every_n_loads
         self.device = device
+        self.hybrid_alpha = hybrid_alpha
+        self.hybrid_beta = hybrid_beta
+        self.hybrid_gamma = hybrid_gamma
+        self.hybrid_delta = hybrid_delta
+        self.hybrid_lambda = hybrid_lambda
+        self.admission_control = admission_control
+        self.admission_margin = admission_margin
 
         self._resident: dict[ExpertKey, ExpertEntry] = {}
         self._ever_loaded: set[ExpertKey] = set()
@@ -205,8 +261,45 @@ class GlobalExpertCache:
             # tie-break by recency so LFU doesn't get stuck thrashing between
             # equally-rare experts
             return min(self._resident, key=lambda k: (self._resident[k].access_count, self._resident[k].last_used_step))
+        if self.policy == "hybrid":
+            # Normalization maxima computed ONCE here, not once per candidate
+            # inside a per-key scoring function - min(..., key=fn) calls fn
+            # once per resident entry, so recomputing three max()-over-all-
+            # residents scans inside it made eviction O(n^2) instead of
+            # O(n). Measured impact was real, not theoretical: a full
+            # benchmark run with this cache-thrashing budget dropped to
+            # ~0.6-0.9 tok/s under "hybrid" vs. ~2.6-3.1 tok/s for every
+            # other policy on an identical workload, before this fix.
+            max_access = max((e.access_count for e in self._resident.values()), default=1) or 1
+            max_recency = max((e.last_used_step for e in self._resident.values()), default=1) or 1
+            max_size = max((e.size_bytes for e in self._resident.values()), default=1) or 1
+            return min(self._resident, key=lambda k: self._hybrid_score(k, max_access, max_recency, max_size))
         # fifo (== "reactive"): oldest-loaded, no notion of recency/frequency at all
         return min(self._resident, key=lambda k: self._resident[k].load_order)
+
+    def _hybrid_score(self, key: ExpertKey, max_access: int, max_recency: int, max_size: int) -> float:
+        """score(expert) = alpha*predicted_probability + beta*coactivation_score
+        + gamma*norm_frequency + delta*norm_recency - lambda*norm_load_cost.
+        Higher = more worth keeping; _choose_victim() picks the MINIMUM, so
+        the lowest-scoring resident entry is evicted first. Frequency/
+        recency/cost are normalized against the CURRENT resident set (not a
+        fixed constant, passed in by the caller so it's computed once per
+        eviction decision, not once per candidate) so the weights stay
+        meaningful across very different cache sizes and models - an
+        access_count of 5 means something different in a 4-expert cache
+        than a 400-expert one.
+        """
+        entry = self._resident[key]
+        norm_frequency = entry.access_count / max_access
+        norm_recency = entry.last_used_step / max_recency
+        norm_load_cost = entry.size_bytes / max_size
+        return (
+            self.hybrid_alpha * entry.predicted_probability
+            + self.hybrid_beta * entry.coactivation_score
+            + self.hybrid_gamma * norm_frequency
+            + self.hybrid_delta * norm_recency
+            - self.hybrid_lambda * norm_load_cost
+        )
 
     def _evict_one(self) -> None:
         victim = self._choose_victim()
@@ -246,22 +339,97 @@ class GlobalExpertCache:
         self.stats.cache_misses += 1
         if key in self._ever_loaded:
             self.stats.expert_reloads += 1
-        self._ever_loaded.add(key)
+        self._note_ever_loaded(key)
 
         t0 = time.perf_counter()
         entry = self._load_entry(key)
         self.stats.expert_io_wait_seconds += time.perf_counter() - t0
         entry.access_count = 1
+        # Same class of bug as prefetch's access_count fix above, for the
+        # "hybrid" policy specifically: a reactive miss means the real
+        # router CONFIRMED it needs this expert right now - that's stronger
+        # evidence than any prediction, not the ExpertEntry dataclass's 0.0
+        # default (which "hybrid" would read as "definitely not needed",
+        # the worst possible score, making a just-loaded-because-it-was-
+        # NEEDED entry the first thing evicted next). Caught by a unit test
+        # before this ever ran on a real model.
+        entry.predicted_probability = 1.0
         self._admit(key, entry)
         return entry.weights
 
-    def prefetch(self, layer_idx: int, expert_ids: list[int]) -> None:
+    def _note_ever_loaded(self, key: ExpertKey) -> None:
+        if key not in self._ever_loaded:
+            self._ever_loaded.add(key)
+            self.stats.unique_experts_loaded += 1
+
+    def _estimate_avg_expert_bytes(self) -> float:
+        if self.stats.unique_experts_loaded == 0:
+            return 0.0
+        return self.stats.storage_bytes_read / self.stats.unique_experts_loaded
+
+    def _estimate_avg_load_seconds(self) -> float:
+        single_loads = max(1, self.stats.reads_count // 3)  # 3 reads (gate/up/down) per expert load
+        return self.stats.read_seconds_total / single_loads
+
+    def should_prefetch(self, key: ExpertKey, predicted_probability: float) -> bool:
+        """Admission gate (Fase 4 - "não carregar um expert se o benefício
+        previsto não justificar uma eviction melhor"). Deliberately simple,
+        not mathematically perfect - a real, tunable first version, not a
+        placeholder:
+
+          benefit = predicted_probability * avg_observed_reactive_load_seconds
+          cost    = (avg_load_seconds again, as the eviction penalty - the
+                     cost of having to reload whatever gets evicted to make
+                     room, if the cache is already full) + this prefetch's
+                     own load cost (avg_load_seconds)
+          prefetch only if benefit > cost * admission_margin
+
+        Everything is in the same unit (seconds this run has actually
+        measured, not a guess) so the comparison is at least dimensionally
+        honest. Before any history exists (first few loads), always admits -
+        nothing to judge benefit against yet.
+        """
+        avg_load_seconds = self._estimate_avg_load_seconds()
+        if self.stats.reads_count == 0:
+            return True
+        benefit = predicted_probability * avg_load_seconds
+        avg_expert_bytes = self._estimate_avg_expert_bytes()
+        would_evict = bool(self._resident) and (self.resident_bytes + avg_expert_bytes > self.budget_bytes)
+        eviction_penalty = avg_load_seconds if would_evict else 0.0
+        cost = eviction_penalty + avg_load_seconds
+        return benefit > cost * self.admission_margin
+
+    def prefetch(
+        self, layer_idx: int, expert_ids: list[int],
+        predicted_probabilities: dict[int, float] | None = None,
+        coactivation_scores: dict[int, float] | None = None,
+    ) -> None:
         """Speculative, off-the-critical-path load - may turn out useful or
-        wasted, resolved later (on use or eviction)."""
+        wasted, resolved later (on use or eviction). `predicted_probabilities`/
+        `coactivation_scores` (optional, expert_idx -> score) feed the
+        "hybrid" eviction rule (see _hybrid_score) and the admission-control
+        gate (see should_prefetch) - every other policy ignores them, so
+        passing None/{} (the default) preserves the exact prior behavior:
+        unconditional admission, no per-entry scores tracked.
+        """
         for expert_idx in expert_ids:
             key = (layer_idx, expert_idx)
+            predicted_probability = (predicted_probabilities or {}).get(expert_idx, 1.0)
             if key in self._resident:
-                continue  # already resident (from a hit or an earlier prefetch) - not a new prefetch
+                # already resident - still worth refreshing its scores, so a
+                # "hybrid" eviction decision made a few steps from now uses
+                # the current prediction, not a stale one from when this
+                # expert first entered the cache.
+                if self.policy == "hybrid":
+                    entry = self._resident[key]
+                    entry.predicted_probability = predicted_probability
+                    entry.coactivation_score = (coactivation_scores or {}).get(expert_idx, entry.coactivation_score)
+                continue  # already resident - not a new prefetch
+            if self.admission_control:
+                self.stats.admission_checks += 1
+                if not self.should_prefetch(key, predicted_probability):
+                    self.stats.admission_rejected += 1
+                    continue
             entry = self._load_entry(key)
             entry.is_pending_prefetch = True
             # Matches get()'s baseline, not the ExpertEntry dataclass's 0
@@ -275,7 +443,10 @@ class GlobalExpertCache:
             # than a reactively-loaded entry just because of how it entered
             # the cache.
             entry.access_count = 1
-            self._ever_loaded.add(key)
+            if self.policy == "hybrid":
+                entry.predicted_probability = predicted_probability
+                entry.coactivation_score = (coactivation_scores or {}).get(expert_idx, 0.0)
+            self._note_ever_loaded(key)
             self.stats.prefetched_experts += 1
             self.stats.bytes_prefetched += entry.size_bytes
             self._admit(key, entry)
