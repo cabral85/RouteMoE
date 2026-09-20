@@ -59,9 +59,16 @@ from eai.workloads import WORKLOAD_NAMES, build_workload
 POLICY_CHOICES = [
     "reactive", "lru", "lfu",
     "eai", "eai_lookahead_1", "eai_lookahead_2", "eai_lookahead_4", "eai_lookahead_8",
-    "eai_coactivation",
+    "eai_coactivation", "eai_coactivation_lfu",
     "oracle",
 ]
+# eai_coactivation_lfu: same coactivation-based prefetch as eai_coactivation,
+# but LFU eviction instead of LRU underneath - motivated by a real finding
+# (docs/benchmark_findings_current.md §2): in a warm, multi-prompt cache,
+# plain lfu beat a perfect Oracle because Oracle's own prefetching evicts
+# things a frequency count would have protected across prompts. This tests
+# whether giving a PREDICTOR's prefetch that same cross-prompt memory (via
+# its eviction rule, not the prediction itself) recovers that advantage.
 
 # Single source of truth for both stage 1 (generate_and_trace) and stage 2
 # (replay_policy)'s prefill chunking - they MUST match exactly, since bf16
@@ -286,7 +293,12 @@ def main():
     print(f"\n=== Stage 2: replay under each policy, cache_budget={args.cache_gb}GB, scenario={args.cache_scenario} ===")
     events = []
     for policy in policies:
-        cache_policy = "lru" if policy.startswith("eai") or policy == "oracle" else policy
+        if policy == "eai_coactivation_lfu":
+            cache_policy = "lfu"
+        elif policy.startswith("eai") or policy == "oracle":
+            cache_policy = "lru"
+        else:
+            cache_policy = policy
         cache = None  # (re)built fresh per prompt in "cold"; built once and reused in "warm"
 
         for prompt_idx, p in enumerate(prompts):
@@ -427,7 +439,7 @@ def replay_policy(model, blocks, tokenizer, trace: GenerationTrace, policy: str,
                 if top1_pred in real_set:
                     bench_stats.predictor_top1_hits += 1
 
-            if policy == "eai_coactivation":
+            if policy.startswith("eai_coactivation"):
                 for layer_idx, block in enumerate(blocks):
                     window = coactivation_select(index, pred_result.cluster_id, layer_idx, target_width=top_k)
                     cache.prefetch(layer_idx, sorted(window))

@@ -125,6 +125,22 @@ def test_prefetch_pending_at_end_counts_as_wasted_after_finalize():
     print("test_prefetch_pending_at_end_counts_as_wasted_after_finalize: OK")
 
 
+def test_lfu_prefetch_not_immediately_self_evicted():
+    """Regression test for a real bug: prefetch() didn't set access_count,
+    leaving it at the ExpertEntry dataclass's 0 default - the lowest
+    possible value, meaning LFU picked every fresh prefetch as its own
+    first eviction victim before it could ever be used. Caught by a real
+    benchmark run: eai_coactivation_lfu had 144/144 prefetches wasted, 0
+    useful, byte-identical hit_rate to plain lfu with no prefetching at
+    all."""
+    cache = make_cache("lfu", budget_experts=2)
+    cache.get(0, 0)  # access_count=1, one real use
+    cache.prefetch(0, [1])  # access_count must be >= 1, not 0, or this is evicted next
+    cache.get(0, 2)  # a 3rd distinct key over budget=2 forces one eviction
+    assert (0, 1) in cache.resident_keys, "a fresh prefetch must not be the FIRST thing LFU evicts, before it's ever had a chance to be used"
+    print("test_lfu_prefetch_not_immediately_self_evicted: OK")
+
+
 def test_global_budget_spans_layers():
     """A 2-expert-worth budget must be shared ACROSS layers, not per-layer -
     the whole point of this module vs. the old per-layer dict caches."""
@@ -156,6 +172,7 @@ if __name__ == "__main__":
     test_prefetch_useful_when_subsequently_used()
     test_prefetch_wasted_when_evicted_unused()
     test_prefetch_pending_at_end_counts_as_wasted_after_finalize()
+    test_lfu_prefetch_not_immediately_self_evicted()
     test_global_budget_spans_layers()
     test_reload_counted_distinct_from_cold_miss()
     print("\nOK - all expert_cache unit tests passed")

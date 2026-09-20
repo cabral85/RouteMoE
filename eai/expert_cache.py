@@ -264,6 +264,17 @@ class GlobalExpertCache:
                 continue  # already resident (from a hit or an earlier prefetch) - not a new prefetch
             entry = self._load_entry(key)
             entry.is_pending_prefetch = True
+            # Matches get()'s baseline, not the ExpertEntry dataclass's 0
+            # default: without this, under LFU a fresh prefetch has the
+            # lowest possible access_count and becomes the FIRST eviction
+            # candidate, before it's ever had a chance to be used - verified
+            # empirically (eai_coactivation_lfu: 144/144 prefetches wasted,
+            # 0 useful, byte-for-byte identical hit_rate to plain lfu with
+            # no prefetching at all - LFU was evicting every single
+            # prefetch immediately). A prefetch shouldn't start out WORSE
+            # than a reactively-loaded entry just because of how it entered
+            # the cache.
+            entry.access_count = 1
             self._ever_loaded.add(key)
             self.stats.prefetched_experts += 1
             self.stats.bytes_prefetched += entry.size_bytes

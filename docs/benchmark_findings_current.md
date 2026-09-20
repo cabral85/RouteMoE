@@ -234,10 +234,54 @@ parameter (`"cpu"`/`"cuda"`) - see §4 above for the first real measurement
 (OLMoE, RTX 5060 Laptop 8.5GB VRAM): disk read cost identical whether the
 destination is RAM or VRAM, GPU tok/s actually slightly worse than CPU for
 this tiny/batch=1 workload (not enough parallel work to amortize kernel
-overhead), correctness verified identical to CPU. Not yet wired into
-`scripts/benchmark_streaming.py`'s own CLI (`--device` flag) or extended to
-a 3-tier VRAM->RAM->disk fallback - both real, larger follow-ups, not done
-yet.
+overhead), correctness verified identical to CPU. **Now also wired into
+`scripts/benchmark_streaming.py` itself** (`--device {cpu,cuda}`) - the full
+policy sweep can run on GPU, not just the standalone experiment. Found and
+fixed one real bug getting this working: `generate_and_trace` called
+`.numpy()` directly on a CUDA tensor (`last_selected`), which fails - needs
+`.cpu()` first, same as the fingerprint tensor two lines below already did.
+Validated end to end on OLMoE with `--device cuda`: router-correctness gate
+held, zero mismatches. Not yet extended to a 3-tier VRAM->RAM->disk
+fallback, and not yet re-measured on a bigger model where GPU compute
+parallelism would have enough work to matter.
+
+## 7. Testing whether `lfu`'s warm-cache advantage can be combined with prediction
+
+§2's finding (plain `lfu` beating a perfect Oracle in a warm cache, because
+Oracle's own prefetching evicts things a frequency count protects) raised an
+obvious question: can `eai_coactivation`'s targeted prefetch be combined
+with `lfu`'s cross-prompt memory, instead of `lru`, to get the best of both?
+Added `eai_coactivation_lfu` to test it directly.
+
+**First run found a real bug, not just a negative result.**
+`eai_coactivation_lfu` produced hit_rates byte-identical to plain `lfu`
+across all 6 test prompts - suspicious on its face. Root cause:
+`GlobalExpertCache.prefetch()` never set a freshly-loaded entry's
+`access_count` (leaving the `ExpertEntry` dataclass's `0` default), while
+`get()` always sets it to `1`. Under LFU eviction (always evicts the lowest
+`access_count`), a fresh prefetch was therefore the guaranteed FIRST
+eviction victim, before it could ever be used - confirmed: 144/144
+prefetches wasted, 0 useful. **This is a general bug affecting any
+prefetch+LFU combination**, not specific to this one policy - fixed in
+`eai/expert_cache.py` (prefetch now sets `access_count=1`, matching `get()`,
+so a prefetch starts on equal footing with a reactively-loaded entry instead
+of guaranteed-worst). Added `tests/test_expert_cache.py::test_lfu_prefetch_not_immediately_self_evicted`
+as a regression test.
+
+**After the fix, the honest answer to the original question is still no.**
+Prefetches are no longer *always* wasted (some now land: 12/114, 1/117,
+etc.), but `eai_coactivation_lfu` still landed slightly *below* plain `lfu`
+on every one of 6 prompts (e.g. 69.1% vs 69.4%, 78.2% vs 79.6%), with
+noticeably more evictions (774 vs 646 on one prompt, 1273 vs 1147 on
+another). Why: `lfu`'s protection is about *accumulated* long-run frequency
+- an item with dozens of real accesses over a session is untouchable, but a
+prefetch starting at `access_count=1` is still near the bottom of that
+accumulated ranking once the session has run a while, so it still gets
+evicted often, while ALSO adding extra I/O the no-prefetch baseline never
+paid. **Conclusion: `lfu`'s warm-cache advantage specifically comes from
+never prefetching at all** (pure passive protection via reactive-access
+accumulation) - layering prediction on top, even a well-targeted one,
+reintroduces a version of the same problem that hurt Oracle, just weaker.
 
 ## What's next
 
@@ -245,8 +289,6 @@ yet.
   Qwen3-30B, VRAM allowing), where GPU compute parallelism has enough work
   to show a real speed difference instead of being dominated by disk I/O
   either way.
-- Wire `--device` into `scripts/benchmark_streaming.py` itself so the full
-  policy sweep can run on GPU, not just the standalone experiment script.
 - More Qwen3-30B prompts before treating §5's `eai_coactivation` vs.
   `lru`/`reactive` ordering as a real finding rather than small-sample noise.
 - Consider adding an `eai_coactivation` variant that ALSO tracks long-run
