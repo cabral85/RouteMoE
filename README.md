@@ -281,6 +281,13 @@ eai-poc/
     predictor.py             # fingerprint -> predicted experts (does not touch the model)
     metrics.py                # accuracy/recall/precision/coverage + baselines
     chunked_expert_loader.py   # round 4/6: loads a model with 0 experts resident; OLMoE, Qwen2-MoE, Qwen3-MoE
+                                 # ExpertShardIndex here also does the round-7 seek()+readinto() disk reads
+                                 # (no mmap - see docs/benchmark_findings_2026-09-19.md #4) and accepts a
+                                 # device= param ("cpu"/"cuda") for the backbone and any per-block cache.
+    expert_cache.py              # round 7: GlobalExpertCache - one shared, fixed-byte-budget cache across
+                                 # every layer, pluggable eviction (reactive/lru/lfu), also device-aware.
+    workloads.py                  # round 7: random/domain_clustered/conversational/adversarial_shift
+                                 # prompt orderings, for scripts/benchmark_streaming.py's workload sweeps.
   scripts/
     collect.py       # phase 2: trace train+test prompts -> artifacts/traces_{split}.npz (models that fit normally)
     collect_chunked.py # round 6: same, via the chunked loader - for models too large to load any other way
@@ -289,6 +296,21 @@ eai-poc/
     chunked_inference_experiment.py  # round 4: correctness + real memory, whole-prompt prefetch
     streaming_eviction_experiment.py  # round 5/6: token-by-token streaming, real eviction, 3 policies compared
     ram_watchdog.py                     # safety net for large-model load attempts - see Model choice
+    benchmark_streaming.py               # round 7: the main fixed-budget policy benchmark - two-stage
+                                         # trace-then-replay, 7+ pluggable policies, workload/scenario sweeps,
+                                         # --device {cpu,cuda}, a per-step router-correctness gate.
+    run_full_sweep.py                     # round 7: drives benchmark_streaming.py across a full
+                                         # (budget x workload x scenario) grid, with --resume support.
+    analyze_benchmark.py                  # round 7: tables + plots from a benchmark_streaming.py JSONL
+                                         # event file - never compares across budgets, flags negative
+                                         # results and timing that looks contaminated by machine load.
+    validate_benchmark_invariants.py      # round 7: automated structural-invariant gate (router
+                                         # correctness, budget enforcement, Oracle-never-worse) - run
+                                         # before trusting any sweep's output.
+    gpu_expert_streaming_experiment.py    # round 7: standalone CPU-vs-CUDA cold-start/correctness
+                                         # measurement, independent of the main sweep script.
+    dense_layer_streaming_experiment.py   # round 7: does the MoE chunked-loading idea generalize to a
+                                         # dense model? (no - see Results, Round 7's last bullet)
   data/
     prompts_train.jsonl  # 120 prompts, 10 categories (profiling/training)
     prompts_test.jsonl    # 40 prompts, same categories, disjoint from train
@@ -300,8 +322,18 @@ eai-poc/
     model_hashing.eai        # OLMoE, baseline C comparison - see Results
     qwen15moe/                # second model's traces + indexes - see Results, round 3
     qwen3_30b/                  # third model (30B-class) - see Results, round 6
+    benchmark/                    # round 7: scripts/benchmark_streaming.py's JSONL event output +
+                                  # scripts/analyze_benchmark.py's generated tables/plots (gitignored,
+                                  # regenerate via scripts/run_full_sweep.py)
+  docs/
+    benchmark_findings_2026-09-19.md  # round 7: archived findings from before the mmap->seek()+readinto()
+                                      # I/O fix - mechanism-level findings still valid, timing numbers stale
+    benchmark_findings_current.md     # round 7: the live findings document - read this for the latest
+                                      # numbers, most recent first
   tests/
     test_pipeline_synthetic.py  # end-to-end pipeline check on synthetic data, no model download
+    test_expert_cache.py          # round 7: GlobalExpertCache unit tests (budget/eviction/prefetch logic)
+    test_workloads.py              # round 7: workload-ordering unit tests
 ```
 
 ## Setup
@@ -1012,23 +1044,42 @@ worth building toward, not worth overselling.
   [Model choice](#model-choice) for which other architectures were considered
   and ruled out (broken instrumentation, unverified custom code, or too
   large for this machine), not by design choice.
-- **Only two market-relevant scales tested (7B, 14B total params).** The
-  papers in [Related work](#related-work-is-this-valuable-to-the-market)
-  target the regime where offloading actually hurts (30B+ total params, where
-  memory transfer dominates latency). A serious, six-strategy attempt to test
-  there (see
-  [Attempting a 30B-class model](#attempting-a-30b-class-model-round-1-a-well-documented-failure))
-  hit a hard, well-diagnosed ~41-44GB peak-RAM wall during model *loading
-  alone*, independent of OS. The generalization evidence here is real but
-  doesn't yet reach the scale where the market problem is most painful - not
-  for lack of trying, but because loading a checkpoint that size needs
-  roughly 3x its quantized footprint in free RAM just to get it resident,
-  which this machine doesn't have. That number is itself a useful data point
-  for anyone else attempting this on similarly modest hardware.
-- Next steps this PoC deliberately did not attempt (per the spec's scope):
-  predictive prefetch, an expert cache, SSD/RAM/VRAM offloading, a trained
-  neural predictor, HNSW, distributed inference. All of those should follow
-  *after* the hypothesis section below, not before.
+- **All three market-relevant scales now tested (7B, 14B, and 30B total
+  params).** This used to say "only 7B/14B" - no longer true. The standard
+  `accelerate`/`bitsandbytes` loading path genuinely cannot get a 30B-class
+  checkpoint resident on this machine (see
+  [Attempting a 30B-class model](#attempting-a-30b-class-model-round-1-a-well-documented-failure)
+  - six strategies, a hard ~41-44GB peak-RAM wall during loading alone,
+  independent of OS; still a real, useful data point for anyone on similarly
+  modest hardware via that path specifically). But
+  [Round 6](#round-6-a-30b-model-actually-fitting-and-running-fast) and
+  [Round 7](#round-7-does-eai-actually-beat-simple-caching-under-a-fixed-memory-budget)
+  reach that scale anyway via a different path (the chunked loader, which
+  never asks for the whole model resident at once) - `Qwen/Qwen3-30B-A3B-Instruct-2507`
+  loads in ~2s and streams with ~9-10GB peak resident expert memory, and the
+  full fixed-budget policy benchmark (128 events, cold+warm, two budgets) now
+  runs there too. What's *not* tested is the regime the "3x quantized
+  footprint just to load" number describes - a checkpoint too large even for
+  chunked loading's ~3GB backbone-only footprint - which would need pushing
+  past 30B, not solving this bottleneck again at a bigger size.
+- **Predictive prefetch and an expert cache are both done, not future work.**
+  This used to list them as deliberately-not-attempted. They're now core,
+  tested infrastructure:
+  [Round 4](#round-4-acting-on-the-prediction-not-just-scoring-it)/[5](#round-5-real-streaming-eviction---load-process-unload-per-token)
+  built predictive prefetch with real per-token streaming eviction;
+  [Round 7](#round-7-does-eai-actually-beat-simple-caching-under-a-fixed-memory-budget)'s
+  `GlobalExpertCache` is a real, fixed-byte-budget expert cache with 7
+  pluggable eviction policies, benchmarked head-to-head under identical
+  conditions. SSD-to-RAM streaming is the chunked loader's whole premise
+  (every expert read is a disk read, on demand); RAM-to-VRAM offloading now
+  works too (`device="cuda"`, wired into both the standalone GPU experiment
+  and `scripts/benchmark_streaming.py`'s own CLI). Still genuinely not
+  attempted, by deliberate scope choice, not an oversight: a **trained
+  neural predictor** (this PoC's clustering approach is zero-training by
+  design - see [Related work](#related-work-is-this-valuable-to-the-market)),
+  **HNSW** (the fingerprint index is small enough that brute-force
+  nearest-centroid search is still effectively free - see
+  [Metrics](#metrics)'s index lookup numbers), and **distributed inference**.
 
 ## Does the hypothesis hold?
 
@@ -1124,6 +1175,44 @@ Tracing how the answer changed between the two rounds is itself the finding:
   [Round 7](#round-7-does-eai-actually-beat-simple-caching-under-a-fixed-memory-budget)
   and [docs/benchmark_findings_current.md](docs/benchmark_findings_current.md)
   for the full data.
+- **The obvious follow-up to the warm-cache/`lfu` finding - combine
+  `eai_coactivation`'s targeted prefetch with `lfu`'s eviction instead of
+  `lru` - was tried (`eai_coactivation_lfu`) and answers "no, not like
+  this."** Building it surfaced a real, general bug first: `GlobalExpertCache.prefetch()`
+  never set a fresh entry's `access_count`, so under LFU (always evicts the
+  lowest count) a prefetch was the guaranteed first eviction victim before
+  it could ever be used - 144/144 prefetches wasted, 0 useful, confirmed and
+  fixed (now a regression test). After the fix, the honest answer stands:
+  `eai_coactivation_lfu` still landed slightly *below* plain `lfu` on every
+  test prompt, with more evictions - `lfu`'s warm-cache advantage comes
+  specifically from *never prefetching at all* (passive protection via
+  accumulated reactive-access frequency); layering prediction on top, even a
+  well-targeted one, reintroduces a version of the problem that hurt Oracle,
+  just weaker. This is why the current phase's `hybrid` policy (see
+  [docs/benchmark_findings_current.md](docs/benchmark_findings_current.md))
+  scores candidates on frequency/recency/predicted-probability/coactivation/
+  load-cost together, rather than just swapping one cache's eviction rule
+  for another.
+- **The Qwen3-30B sweep was expanded (2 -> 4 prompts, cold-only -> cold+warm,
+  128 events, 0 invariant failures) and the warm-cache jump OLMoE showed did
+  NOT reproduce at this scale** (+0.8 to +2.7pp vs. OLMoE's +20pp at a
+  comparable budget) - most likely too short a session for cross-prompt
+  popularity to accumulate against a 6144-slot expert space (48 layers x 128
+  experts, vs. OLMoE's 1024). Genuinely untested, not just unconfirmed:
+  plain `lfu` itself wasn't in this sweep's policy list, so whether the
+  OLMoE finding holds at this scale with a longer session is still an open
+  question.
+- **GPU (CUDA) support is real, not a stub**: `device="cuda"` works end to
+  end through `scripts/benchmark_streaming.py`'s own CLI now, not just a
+  standalone experiment, with one real bug found and fixed along the way
+  (`.numpy()` on a CUDA tensor needs `.cpu()` first). Disk-read cost was
+  identical whether the destination was RAM or VRAM on both a small model
+  (OLMoE, GPU tok/s 88% of CPU) and a bigger one (Qwen1.5-MoE, GPU tok/s
+  114% of CPU) - though that second number carries a real, disclosed
+  methodological caveat (the experiment runs CPU before GPU in the same
+  process, so GPU's reads benefit from an OS page cache the CPU run just
+  warmed) and shouldn't be read as "GPU wins on bigger models" without a
+  run-order-controlled re-measurement.
 
 **Recommendation: the three things this PoC most needed to prove - "does
 streaming eviction actually save memory," "does this work on a model large
@@ -1135,11 +1224,16 @@ missing foundational piece:
    **done in Round 7** (`eai_coactivation`); it beats plain `eai` but the
    real result was narrower than hoped - see Round 7's bullets above for
    where it does and doesn't help, especially the warm-cache/`lfu` finding.
-2. **Build an `eai_coactivation` + long-run-frequency hybrid.** Round 7's
-   warm-scenario result (plain `lfu` beating a perfect Oracle) suggests the
-   next real gain isn't a smarter *prediction*, it's giving the eviction
-   policy the same kind of cross-prompt memory `lfu` gets almost for free -
-   worth testing before concluding prediction has hit its ceiling.
+2. ~~Build an `eai_coactivation` + long-run-frequency hybrid~~ - **tried
+   (`eai_coactivation_lfu`), answer is no, not by just swapping the eviction
+   rule.** Surfaced and fixed a real bug (prefetch entries were the
+   guaranteed first LFU eviction victim) but even after the fix, landed
+   slightly below plain `lfu` with more evictions - `lfu`'s advantage
+   specifically comes from never prefetching at all. The current phase (see
+   [docs/benchmark_findings_current.md](docs/benchmark_findings_current.md))
+   is building a real weighted `hybrid` scoring policy instead of a
+   swapped-eviction-rule shortcut - frequency/recency/predicted-probability/
+   coactivation/load-cost combined, not one substituted for another.
 3. **Explain why `eai_predict` and `lru` nearly tied at 30B scale** (16.1%
    vs. 16.3%, Round 6) when `eai_predict` clearly won at smaller scale
    (29.9% vs. 33.2% on OLMoE). The likely cause - 120 training prompts
@@ -1149,10 +1243,12 @@ missing foundational piece:
 4. **Explain the OLMoE-vs-Qwen1.5-MoE accuracy gap** (density? shared
    expert?) before treating any single model's numbers as
    architecture-independent.
-5. **More Qwen3-30B sweep coverage** - Round 7's target-scale numbers used
-   only 2 prompts and cold-cache only; not enough to trust
-   `eai_coactivation`'s exact ranking there, or to know if the warm-cache
-   `lfu` finding holds at this scale too.
+5. ~~More Qwen3-30B sweep coverage~~ - **done** (2 -> 4 prompts, cold-only ->
+   cold+warm, 128 events). Found the warm-cache jump doesn't reproduce at
+   this scale in the session lengths tested, and that plain `lfu` itself
+   still needs to be added to this sweep's policy list before the OLMoE
+   warm-cache finding can be called confirmed *or* scale-dependent at 30B -
+   see [Does the hypothesis hold?](#does-the-hypothesis-hold) above.
 6. **Push past 30B** - the chunked-loader approach never needs the full
    model resident even at load time, so the ~41-44GB wall that stopped
    round 1's accelerate/bitsandbytes attempts may not reappear at 70B+
