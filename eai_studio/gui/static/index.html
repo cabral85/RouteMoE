@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>eai-studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #8884; padding-bottom: .3rem; }
+  section { margin-bottom: 1.5rem; }
+  label { display: block; font-size: .85rem; margin-top: .6rem; }
+  input, select { width: 100%; padding: .4rem; margin-top: .2rem; box-sizing: border-box; }
+  button { margin-top: .8rem; padding: .5rem 1rem; cursor: pointer; }
+  table { width: 100%; border-collapse: collapse; margin-top: .6rem; font-size: .85rem; }
+  th, td { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid #8882; }
+  .pill { display: inline-block; padding: .1rem .5rem; border-radius: 1rem; font-size: .75rem; background: #4a90d922; }
+  .moe { background: #2ecc7122; }
+  .status { font-size: .8rem; opacity: .8; }
+  #chatLog { white-space: pre-wrap; border: 1px solid #8884; padding: .6rem; min-height: 4rem; margin-top: .6rem; border-radius: 4px; }
+  .row { display: flex; gap: .5rem; }
+  .row > * { flex: 1; }
+</style>
+</head>
+<body>
+<h1>eai-studio</h1>
+<p class="status">Load, serve, and unload large MoE models on modest hardware. API docs at <a href="/docs">/docs</a>.</p>
+
+<section>
+  <h2>Ollama models <label style="display:inline"><input type="checkbox" id="moeOnly" checked style="width:auto"> MoE only</label></h2>
+  <div id="ollamaStatus" class="status">checking...</div>
+  <table id="ollamaTable"><thead><tr><th>Name</th><th>Size</th><th>Params</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
+<section>
+  <h2>Load a model</h2>
+  <label>Model ID (Hugging Face Hub, e.g. allenai/OLMoE-1B-7B-0924)
+    <input id="modelId" placeholder="allenai/OLMoE-1B-7B-0924">
+  </label>
+  <div class="row">
+    <label>Cache budget (GB)<input id="cacheGb" type="number" value="4" step="0.5"></label>
+    <label>Policy
+      <select id="policy">
+        <option value="hybrid" selected>hybrid</option>
+        <option value="lru">lru</option>
+        <option value="lfu">lfu</option>
+        <option value="reactive">reactive</option>
+      </select>
+    </label>
+    <label>Device
+      <select id="device"><option value="cpu" selected>cpu</option><option value="cuda">cuda</option></select>
+    </label>
+  </div>
+  <button onclick="loadModel()">Load</button>
+  <span id="loadStatus" class="status"></span>
+</section>
+
+<section>
+  <h2>Loaded models</h2>
+  <table id="loadedTable"><thead><tr><th>Model</th><th>Policy</th><th>Hit rate</th><th>Resident GB</th><th>Churn</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
+<section>
+  <h2>Try it</h2>
+  <div class="row">
+    <input id="chatModel" placeholder="model id (must be loaded above)">
+    <input id="chatInput" placeholder="Say something..." style="flex:3">
+    <button onclick="sendChat()" style="flex:0 0 auto">Send</button>
+  </div>
+  <div id="chatLog"></div>
+</section>
+
+<script>
+const api = (path, opts) => fetch(path, opts).then(r => r.json());
+
+async function refreshOllama() {
+  const moeOnly = document.getElementById('moeOnly').checked;
+  const data = await api(`/api/ollama/models?moe_only=${moeOnly}`);
+  const statusEl = document.getElementById('ollamaStatus');
+  const tbody = document.querySelector('#ollamaTable tbody');
+  tbody.innerHTML = '';
+  if (!data.ollama_available) {
+    statusEl.textContent = 'Ollama not detected on localhost:11434 - this panel is optional, load models by Hugging Face ID below instead.';
+    return;
+  }
+  statusEl.textContent = `${data.models.length} model(s) found`;
+  for (const m of data.models) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${m.name}</td><td>${(m.size_bytes/1e9).toFixed(1)}GB</td><td>${m.parameter_size || '-'}</td>
+      <td><button onclick="document.getElementById('modelId').value='${m.name}'">Use</button></td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function refreshLoaded() {
+  const data = await api('/api/models/loaded');
+  const tbody = document.querySelector('#loadedTable tbody');
+  tbody.innerHTML = '';
+  for (const m of data.models) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${m.model_id}</td><td>${m.policy}</td><td>${(m.hit_rate*100).toFixed(1)}%</td>
+      <td>${(m.resident_bytes/1e9).toFixed(2)}</td><td>${(m.eviction_churn*100).toFixed(1)}%</td>
+      <td><button onclick="unloadModel('${m.model_id}')">Unload</button></td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function loadModel() {
+  const body = {
+    model_id: document.getElementById('modelId').value,
+    cache_gb: parseFloat(document.getElementById('cacheGb').value),
+    policy: document.getElementById('policy').value,
+    device: document.getElementById('device').value,
+  };
+  document.getElementById('loadStatus').textContent = 'loading... (this can take a while for a large model)';
+  const res = await fetch('/api/models/load', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const data = await res.json();
+  document.getElementById('loadStatus').textContent = res.ok ? `loaded in ${data.load_seconds.toFixed(1)}s` : `error: ${data.detail}`;
+  document.getElementById('chatModel').value = body.model_id;
+  refreshLoaded();
+}
+
+async function unloadModel(modelId) {
+  await fetch(`/api/models/${encodeURIComponent(modelId)}/unload`, { method: 'POST' });
+  refreshLoaded();
+}
+
+async function sendChat() {
+  const model = document.getElementById('chatModel').value;
+  const content = document.getElementById('chatInput').value;
+  const log = document.getElementById('chatLog');
+  log.textContent += `\nyou: ${content}\n...`;
+  const res = await fetch('/v1/chat/completions', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ model, messages: [{role:'user', content}], max_tokens: 128 }),
+  });
+  const data = await res.json();
+  log.textContent = log.textContent.replace(/\.\.\.$/, '');
+  log.textContent += res.ok ? data.choices[0].message.content : `[error: ${data.detail}]`;
+  refreshLoaded();
+}
+
+refreshOllama();
+refreshLoaded();
+document.getElementById('moeOnly').addEventListener('change', refreshOllama);
+setInterval(refreshLoaded, 5000);
+</script>
+</body>
+</html>
