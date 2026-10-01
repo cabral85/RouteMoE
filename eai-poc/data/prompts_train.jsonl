@@ -1,0 +1,120 @@
+{"id": "python-train-01", "category": "python", "text": "Escreva uma função Python que verifica se um número é primo."}
+{"id": "python-train-02", "category": "python", "text": "Como faço para ler um arquivo CSV em Python usando pandas?"}
+{"id": "python-train-03", "category": "python", "text": "Implemente uma pilha (stack) em Python usando uma lista."}
+{"id": "python-train-04", "category": "python", "text": "Escreva um decorator Python que mede o tempo de execução de uma função."}
+{"id": "python-train-05", "category": "python", "text": "Como converter uma lista de dicionários em um DataFrame do pandas?"}
+{"id": "python-train-06", "category": "python", "text": "Explique a diferença entre deepcopy e copy no módulo copy do Python."}
+{"id": "python-train-07", "category": "python", "text": "Escreva uma função recursiva em Python para calcular o fatorial de um número."}
+{"id": "python-train-08", "category": "python", "text": "Como faço um web scraper simples em Python usando requests e BeautifulSoup?"}
+{"id": "python-train-09", "category": "python", "text": "Implemente um algoritmo de busca binária em Python."}
+{"id": "python-train-10", "category": "python", "text": "Escreva um gerador Python que produz os números da sequência de Fibonacci."}
+{"id": "python-train-11", "category": "python", "text": "Como uso context managers (with) para gerenciar arquivos em Python?"}
+{"id": "python-train-12", "category": "python", "text": "Escreva uma classe Python que implementa uma fila (queue) com listas encadeadas."}
+{"id": "sql-train-01", "category": "sql", "text": "Escreva uma query SQL que retorna os 10 clientes com maior gasto total."}
+{"id": "sql-train-02", "category": "sql", "text": "Como faço um JOIN entre três tabelas em SQL?"}
+{"id": "sql-train-03", "category": "sql", "text": "Escreva uma query para encontrar duplicados em uma tabela SQL."}
+{"id": "sql-train-04", "category": "sql", "text": "Explique a diferença entre INNER JOIN e LEFT JOIN em SQL."}
+{"id": "sql-train-05", "category": "sql", "text": "Escreva uma stored procedure em SQL Server que atualiza o estoque de produtos."}
+{"id": "sql-train-06", "category": "sql", "text": "Como uso window functions (ROW_NUMBER, RANK) em SQL?"}
+{"id": "sql-train-07", "category": "sql", "text": "Escreva uma query SQL para calcular a média móvel de vendas por mês."}
+{"id": "sql-train-08", "category": "sql", "text": "Como faço uma query recursiva usando CTE (WITH RECURSIVE) em SQL?"}
+{"id": "sql-train-09", "category": "sql", "text": "Escreva um comando SQL para criar um índice composto em duas colunas."}
+{"id": "sql-train-10", "category": "sql", "text": "Explique como funciona o GROUP BY com HAVING em SQL."}
+{"id": "sql-train-11", "category": "sql", "text": "Escreva uma query que retorna clientes que nunca fizeram um pedido usando LEFT JOIN e NULL."}
+{"id": "sql-train-12", "category": "sql", "text": "Como otimizar uma query SQL lenta que faz um full table scan?"}
+{"id": "csharp-train-01", "category": "csharp", "text": "Escreva uma classe C# que implementa a interface IComparable."}
+{"id": "csharp-train-02", "category": "csharp", "text": "Como faço async/await em C# para chamar uma API REST?"}
+{"id": "csharp-train-03", "category": "csharp", "text": "Explique a diferença entre struct e class em C#."}
+{"id": "csharp-train-04", "category": "csharp", "text": "Escreva um exemplo de LINQ em C# que filtra e ordena uma lista de objetos."}
+{"id": "csharp-train-05", "category": "csharp", "text": "Como implemento o padrão Singleton em C# de forma thread-safe?"}
+{"id": "csharp-train-06", "category": "csharp", "text": "Escreva um exemplo de generics em C# com uma constraint de interface."}
+{"id": "csharp-train-07", "category": "csharp", "text": "Como faço tratamento de exceções customizadas em C#?"}
+{"id": "csharp-train-08", "category": "csharp", "text": "Explique como funciona o garbage collector em C#/.NET."}
+{"id": "csharp-train-09", "category": "csharp", "text": "Escreva um exemplo de delegate e evento (event) em C#."}
+{"id": "csharp-train-10", "category": "csharp", "text": "Como faço injeção de dependência em C# com ASP.NET Core?"}
+{"id": "csharp-train-11", "category": "csharp", "text": "Escreva uma extension method em C# para strings."}
+{"id": "csharp-train-12", "category": "csharp", "text": "Explique a diferença entre IEnumerable e IQueryable em C#."}
+{"id": "matematica-train-01", "category": "matematica", "text": "Resolva a equação quadrática 2x² - 5x + 3 = 0."}
+{"id": "matematica-train-02", "category": "matematica", "text": "Calcule a derivada de f(x) = x³ln(x)."}
+{"id": "matematica-train-03", "category": "matematica", "text": "Explique o teorema de Pitágoras com um exemplo numérico."}
+{"id": "matematica-train-04", "category": "matematica", "text": "Qual é a probabilidade de tirar duas cartas de ouros seguidas de um baralho sem reposição?"}
+{"id": "matematica-train-05", "category": "matematica", "text": "Calcule a integral definida de sin(x) de 0 a pi."}
+{"id": "matematica-train-06", "category": "matematica", "text": "Explique como calcular o determinante de uma matriz 3x3."}
+{"id": "matematica-train-07", "category": "matematica", "text": "Qual é o limite de (1 + 1/n)^n quando n tende ao infinito?"}
+{"id": "matematica-train-08", "category": "matematica", "text": "Resolva o sistema de equações lineares: 2x + y = 5, x - y = 1."}
+{"id": "matematica-train-09", "category": "matematica", "text": "Explique a diferença entre média, mediana e moda com um exemplo."}
+{"id": "matematica-train-10", "category": "matematica", "text": "Calcule a área de um círculo inscrito em um quadrado de lado 10."}
+{"id": "matematica-train-11", "category": "matematica", "text": "Explique o que é um número primo de Mersenne e dê um exemplo."}
+{"id": "matematica-train-12", "category": "matematica", "text": "Como calcular o desvio padrão de um conjunto de dados?"}
+{"id": "traducao-train-01", "category": "traducao", "text": "Traduza para o inglês: O aprendizado de máquina está transformando a indústria de tecnologia."}
+{"id": "traducao-train-02", "category": "traducao", "text": "Traduza para o português: The early bird catches the worm."}
+{"id": "traducao-train-03", "category": "traducao", "text": "Traduza para o espanhol: Preciso agendar uma reunião para discutir o orçamento do próximo trimestre."}
+{"id": "traducao-train-04", "category": "traducao", "text": "Traduza para o inglês o seguinte trecho técnico: O modelo utiliza uma arquitetura de mistura de especialistas."}
+{"id": "traducao-train-05", "category": "traducao", "text": "Traduza para o português: Despite the heavy rain, the marathon continued as scheduled."}
+{"id": "traducao-train-06", "category": "traducao", "text": "Traduza para o francês: Bem-vindo à nossa loja, como posso ajudar?"}
+{"id": "traducao-train-07", "category": "traducao", "text": "Traduza para o inglês: A empresa reportou um crescimento de 15% nas vendas do último ano."}
+{"id": "traducao-train-08", "category": "traducao", "text": "Traduza para o português mantendo o tom formal: We regret to inform you that your application was not successful."}
+{"id": "traducao-train-09", "category": "traducao", "text": "Traduza para o inglês: Este contrato entra em vigor a partir da data de assinatura."}
+{"id": "traducao-train-10", "category": "traducao", "text": "Traduza para o português: Artificial intelligence raises important ethical questions about privacy."}
+{"id": "traducao-train-11", "category": "traducao", "text": "Traduza para o alemão: Onde fica a estação de trem mais próxima?"}
+{"id": "traducao-train-12", "category": "traducao", "text": "Traduza para o inglês, mantendo o humor: Ele disse que chegaria em cinco minutos há uma hora."}
+{"id": "criativo-train-01", "category": "texto_criativo", "text": "Escreva um pequeno conto sobre um robô que descobre emoções."}
+{"id": "criativo-train-02", "category": "texto_criativo", "text": "Escreva um poema curto sobre o oceano ao entardecer."}
+{"id": "criativo-train-03", "category": "texto_criativo", "text": "Crie uma cena de diálogo tenso entre dois irmãos que não se falam há anos."}
+{"id": "criativo-train-04", "category": "texto_criativo", "text": "Escreva a abertura de uma história de ficção científica ambientada em Marte."}
+{"id": "criativo-train-05", "category": "texto_criativo", "text": "Escreva uma fábula curta com uma raposa e um corvo, com moral no final."}
+{"id": "criativo-train-06", "category": "texto_criativo", "text": "Crie uma descrição atmosférica de uma cidade abandonada após um desastre."}
+{"id": "criativo-train-07", "category": "texto_criativo", "text": "Escreva um haiku sobre o inverno."}
+{"id": "criativo-train-08", "category": "texto_criativo", "text": "Invente um mito de criação para uma civilização fictícia."}
+{"id": "criativo-train-09", "category": "texto_criativo", "text": "Escreva um monólogo de um vilão explicando por que acredita estar certo."}
+{"id": "criativo-train-10", "category": "texto_criativo", "text": "Crie uma cena de suspense em que alguém escuta passos em uma casa vazia."}
+{"id": "criativo-train-11", "category": "texto_criativo", "text": "Escreva uma carta de despedida de um astronauta que sabe que não voltará à Terra."}
+{"id": "criativo-train-12", "category": "texto_criativo", "text": "Escreva um diálogo cômico entre um cliente exigente e um garçom paciente."}
+{"id": "factual-train-01", "category": "perguntas_factuais", "text": "Qual é a capital da Austrália?"}
+{"id": "factual-train-02", "category": "perguntas_factuais", "text": "Quem escreveu Dom Casmurro?"}
+{"id": "factual-train-03", "category": "perguntas_factuais", "text": "Em que ano terminou a Segunda Guerra Mundial?"}
+{"id": "factual-train-04", "category": "perguntas_factuais", "text": "Qual é o maior planeta do sistema solar?"}
+{"id": "factual-train-05", "category": "perguntas_factuais", "text": "Quantos ossos tem o corpo humano adulto?"}
+{"id": "factual-train-06", "category": "perguntas_factuais", "text": "Qual é a moeda oficial do Japão?"}
+{"id": "factual-train-07", "category": "perguntas_factuais", "text": "Quem foi o primeiro presidente do Brasil?"}
+{"id": "factual-train-08", "category": "perguntas_factuais", "text": "Qual é o rio mais longo do mundo?"}
+{"id": "factual-train-09", "category": "perguntas_factuais", "text": "Em que continente fica o Egito?"}
+{"id": "factual-train-10", "category": "perguntas_factuais", "text": "Qual elemento químico tem o símbolo Fe?"}
+{"id": "factual-train-11", "category": "perguntas_factuais", "text": "Quantos lados tem um icosaedro?"}
+{"id": "factual-train-12", "category": "perguntas_factuais", "text": "Qual é a velocidade da luz no vácuo, aproximadamente?"}
+{"id": "raciocinio-train-01", "category": "raciocinio", "text": "Se todos os gatos são mamíferos e alguns mamíferos são pretos, pode-se concluir que algum gato é preto? Explique."}
+{"id": "raciocinio-train-02", "category": "raciocinio", "text": "Três amigos dividem uma conta de R$90 igualmente, mas depois descobrem que houve um desconto de R$15. Quanto cada um deve receber de volta?"}
+{"id": "raciocinio-train-03", "category": "raciocinio", "text": "Um trem sai da cidade A às 14h a 80km/h e outro sai da cidade B (300km de distância) às 14h30 a 100km/h em direção oposta. A que horas se encontram?"}
+{"id": "raciocinio-train-04", "category": "raciocinio", "text": "Se hoje é quarta-feira, que dia da semana será em 100 dias?"}
+{"id": "raciocinio-train-05", "category": "raciocinio", "text": "Um fazendeiro tem galinhas e vacas totalizando 30 cabeças e 74 pés. Quantas galinhas e vacas ele tem?"}
+{"id": "raciocinio-train-06", "category": "raciocinio", "text": "Explique por que a afirmação 'todo quadrado é um retângulo, mas nem todo retângulo é um quadrado' é logicamente consistente."}
+{"id": "raciocinio-train-07", "category": "raciocinio", "text": "Se um relógio atrasa 3 minutos por hora, quanto tempo real passou quando ele mostra que passaram 8 horas?"}
+{"id": "raciocinio-train-08", "category": "raciocinio", "text": "Em uma sala há 23 pessoas. Qual é aproximadamente a probabilidade de duas delas terem o mesmo aniversário?"}
+{"id": "raciocinio-train-09", "category": "raciocinio", "text": "Um vendedor compra um item por R$40 e vende por R$50, depois recompra por R$60 e revende por R$70. Qual o lucro total?"}
+{"id": "raciocinio-train-10", "category": "raciocinio", "text": "Se A é mais alto que B, e B é mais alto que C, mas C é mais alto que D, quem é o mais baixo do grupo, considerando as informações dadas?"}
+{"id": "raciocinio-train-11", "category": "raciocinio", "text": "Explique o paradoxo de Monty Hall e por que trocar de porta aumenta a chance de ganhar."}
+{"id": "raciocinio-train-12", "category": "raciocinio", "text": "Um código secreto substitui cada letra pela seguinte no alfabeto. Se IBM decodifica para HAL, que texto codifica para WORLD?"}
+{"id": "codigo-train-01", "category": "codigo", "text": "Escreva uma função em JavaScript que faz debounce de uma chamada de API."}
+{"id": "codigo-train-02", "category": "codigo", "text": "Escreva um script Bash que renomeia em lote todos os arquivos .txt de uma pasta para .md."}
+{"id": "codigo-train-03", "category": "codigo", "text": "Implemente uma função em Go que verifica se uma árvore binária é balanceada."}
+{"id": "codigo-train-04", "category": "codigo", "text": "Escreva um Dockerfile simples para uma aplicação Node.js."}
+{"id": "codigo-train-05", "category": "codigo", "text": "Escreva uma função em Rust que inverte uma lista encadeada."}
+{"id": "codigo-train-06", "category": "codigo", "text": "Como configuro um pipeline básico de CI/CD no GitHub Actions para rodar testes?"}
+{"id": "codigo-train-07", "category": "codigo", "text": "Escreva um exemplo de componente React funcional com useState e useEffect."}
+{"id": "codigo-train-08", "category": "codigo", "text": "Explique como funciona o event loop do Node.js."}
+{"id": "codigo-train-09", "category": "codigo", "text": "Escreva uma regex que valida um endereço de e-mail."}
+{"id": "codigo-train-10", "category": "codigo", "text": "Como faço um algoritmo de ordenação quicksort em qualquer linguagem de sua escolha?"}
+{"id": "codigo-train-11", "category": "codigo", "text": "Escreva um exemplo de uso de Promises encadeadas em JavaScript."}
+{"id": "codigo-train-12", "category": "codigo", "text": "Explique a diferença entre programação síncrona e assíncrona com um exemplo de código."}
+{"id": "geral-train-01", "category": "perguntas_gerais", "text": "Quais são as vantagens e desvantagens de trabalhar remotamente?"}
+{"id": "geral-train-02", "category": "perguntas_gerais", "text": "Como posso melhorar minha produtividade ao estudar para um exame?"}
+{"id": "geral-train-03", "category": "perguntas_gerais", "text": "Quais fatores devo considerar antes de comprar um notebook novo?"}
+{"id": "geral-train-04", "category": "perguntas_gerais", "text": "Como funciona o sistema de aposentadoria no Brasil (INSS)?"}
+{"id": "geral-train-05", "category": "perguntas_gerais", "text": "Quais são boas práticas para economizar dinheiro no dia a dia?"}
+{"id": "geral-train-06", "category": "perguntas_gerais", "text": "O que devo levar em conta ao escolher entre alugar ou comprar um imóvel?"}
+{"id": "geral-train-07", "category": "perguntas_gerais", "text": "Como planejar uma viagem internacional com orçamento limitado?"}
+{"id": "geral-train-08", "category": "perguntas_gerais", "text": "Quais são os benefícios de praticar exercícios físicos regularmente?"}
+{"id": "geral-train-09", "category": "perguntas_gerais", "text": "Como escrever um currículo que se destaque para vagas de tecnologia?"}
+{"id": "geral-train-10", "category": "perguntas_gerais", "text": "Quais cuidados devo ter ao configurar o Wi-Fi da minha casa para maior segurança?"}
+{"id": "geral-train-11", "category": "perguntas_gerais", "text": "Como escolher um bom seguro de saúde?"}
+{"id": "geral-train-12", "category": "perguntas_gerais", "text": "Quais são as diferenças entre café arábica e robusta?"}

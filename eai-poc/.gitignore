@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Regenerable outputs (run scripts/collect.py, build_index.py, evaluate.py
+# to reproduce) - not committed since they're large-ish binary artifacts,
+# not source.
+artifacts/
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
