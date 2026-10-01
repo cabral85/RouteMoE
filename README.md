@@ -1265,11 +1265,16 @@ missing foundational piece:
 
 The broader idea of a visual, lightweight desktop "Studio" - listing/pulling
 models via a local Ollama instance and exposing a local OpenAI-compatible API,
-the way LM Studio does - is intentionally **not** part of this deliverable.
+the way LM Studio does - was intentionally **not** part of this deliverable.
 It's a UI/server project layered on top of this research core, not a research
-question; building it now would have diluted the one thing this PoC needs to
-prove first. Recommended shape when that work starts: a Python FastAPI backend
-(imports `eai` as a library, proxies Ollama's local REST API, exposes an
-OpenAI-compatible endpoint) behind a `pywebview` native window - one process,
-one language, no Node/Rust toolchain, packageable to a single `.exe` with
-PyInstaller.
+question; building it before this PoC's own questions were answered would
+have diluted the one thing it needed to prove first.
+
+That work has since started: see [`../eai-studio`](../eai-studio), which
+carries over this project's chunked loader and `GlobalExpertCache` verbatim
+(byte-for-byte, see its README) and wraps them in a FastAPI server
+(OpenAI-compatible `/v1/chat/completions` + load/unload management
+endpoints), a small web GUI, and Ollama model discovery with MoE filtering.
+The `pywebview` native-window/`.exe` packaging step described below is not
+done yet there - everything else in this paragraph's original recommendation
+is.
